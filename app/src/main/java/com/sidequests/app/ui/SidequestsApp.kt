@@ -40,6 +40,7 @@ fun SidequestsApp(
         ActivityResultContracts.RequestMultiplePermissions()
     ) {
         appViewModel.refreshContext()
+        if (appState.screen == AppScreen.QuestAlternatives) appViewModel.refreshQuestAlternatives()
     }
 
     SidequestsTheme(darkTheme = appState.darkMode) {
@@ -148,6 +149,12 @@ private fun AuthenticatedSidequestsContent(
                         viewModel = viewModel,
                     )
 
+                    AppScreen.QuestAlternatives -> QuestAlternativesScreen(
+                        state = state,
+                        viewModel = viewModel,
+                        onRequestLocation = onRequestLocation,
+                    )
+
                     AppScreen.Rating -> RatingScreen(
                         viewModel.activeQuest(),
                         viewModel,
@@ -169,6 +176,7 @@ private fun AuthenticatedSidequestsContent(
             if (state.screen !in setOf(
                     AppScreen.Onboarding,
                     AppScreen.ExitFlow,
+                    AppScreen.QuestAlternatives,
                     AppScreen.Rating,
                 )
             ) {

@@ -73,6 +73,7 @@ enum class AppScreen {
     QuestDetail,
     ActiveQuest,
     ExitFlow,
+    QuestAlternatives,
     Rating,
     GroupQuest,
     Profile,
@@ -103,4 +104,5 @@ data class SidequestsUiState(
     val remoteRecommendationIds: List<String> = emptyList(),
     val notificationQuestId: String? = null,
     val contextualNotificationShown: Boolean = false,
+    val questAlternatives: QuestAlternativesState? = null,
 )
