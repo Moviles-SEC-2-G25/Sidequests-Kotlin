@@ -6,6 +6,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.lifecycle.ViewModelProvider
 import com.sidequests.app.context.AndroidLocationProvider
+import com.sidequests.app.context.AlternativeDemoContext
 import com.sidequests.app.context.ContextManager
 import com.sidequests.app.context.OpenMeteoWeatherProvider
 import com.sidequests.app.ui.AppViewModel
@@ -23,7 +24,13 @@ class MainActivity : ComponentActivity() {
             weatherProvider = OpenMeteoWeatherProvider(),
         )
 
-        val factory = AppViewModelFactory(contextManager)
+        val demoContext = if (BuildConfig.DEBUG && intent.hasExtra("alternative_demo_hour")) {
+            AlternativeDemoContext.parse(
+                weather = intent.getStringExtra("alternative_demo_weather"),
+                hour = intent.getIntExtra("alternative_demo_hour", -1),
+            )
+        } else null
+        val factory = AppViewModelFactory(contextManager, demoContext)
         val appViewModel = ViewModelProvider(this, factory)[AppViewModel::class.java]
 
         setContent {

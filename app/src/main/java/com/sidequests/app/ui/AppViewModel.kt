@@ -7,6 +7,8 @@ import com.sidequests.app.BuildConfig
 import com.sidequests.app.context.ContextAwareRecommendationEngine
 import com.sidequests.app.context.ContextManager
 import com.sidequests.app.context.ContextUiState
+import com.sidequests.app.context.UserContext
+import com.sidequests.app.context.timeOfDayFromHour
 import com.sidequests.app.data.InMemorySidequestsRepository
 import com.sidequests.app.data.SidequestsRepository
 import com.sidequests.app.data.SupabaseSidequestsRepository
@@ -26,11 +28,18 @@ import com.sidequests.app.model.AbandonmentReason
 import com.sidequests.app.model.Quest
 import com.sidequests.app.model.QuestDifficulty
 import com.sidequests.app.model.QuestProgress
+import com.sidequests.app.model.QuestAlternative
+import com.sidequests.app.model.QuestAlternativesState
 import com.sidequests.app.model.QuestRating
 import com.sidequests.app.model.SidequestsUiState
 import com.sidequests.app.model.SocialLevel
 import com.sidequests.app.model.UserPreferences
 import com.sidequests.app.domain.QuestStepCompletionPolicy
+import com.sidequests.app.domain.QuestAlternativeRecommender
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -40,6 +49,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import java.io.File
 import java.util.UUID
+import java.time.ZonedDateTime
 class AppViewModel(
     private val contextManager: ContextManager,
     private val repository: SidequestsRepository =
@@ -61,10 +71,14 @@ class AppViewModel(
                 bucketName = BuildConfig.SUPABASE_QUEST_PROOFS_BUCKET,
             )
         } else null,
+    private val alternativeContextReader: suspend () -> UserContext = { contextManager.readContext() },
+    private val alternativeContextSimulated: Boolean = false,
 ) : ViewModel() {
 
     private val analyticsSessionId = UUID.randomUUID().toString()
     private val recommendationEngine = ContextAwareRecommendationEngine()
+    private val alternativeRecommender = QuestAlternativeRecommender()
+    private var alternativeJob: Job? = null
     private val _uiState = MutableStateFlow(SidequestsUiState())
     private val _contextState = MutableStateFlow(ContextUiState())
     val uiState: StateFlow<SidequestsUiState> = _uiState.asStateFlow()
@@ -229,14 +243,19 @@ class AppViewModel(
         }
     }
     fun navigate(screen: AppScreen) {
-        _uiState.update { it.copy(screen = screen) }
+        if (screen != AppScreen.QuestAlternatives) alternativeJob?.cancel()
+        _uiState.update {
+            it.copy(screen = screen, questAlternatives = if (screen == AppScreen.QuestAlternatives) it.questAlternatives else null)
+        }
     }
 
     fun openQuestDetail(questId: String) {
-        _uiState.update { it.copy(selectedQuestId = questId, screen = AppScreen.QuestDetail) }
+        alternativeJob?.cancel()
+        _uiState.update { it.copy(selectedQuestId = questId, screen = AppScreen.QuestDetail, questAlternatives = null) }
     }
 
     fun acceptQuest(questId: String) {
+        alternativeJob?.cancel()
         val quest = repository.questById(questId)
         val currentState = _uiState.value
         val existingProgress = currentState.progressByQuest[questId]
@@ -266,6 +285,7 @@ class AppViewModel(
                 screen = if (quest.isGroup) AppScreen.GroupQuest else AppScreen.ActiveQuest,
                 progressSyncError = null,
                 progressSyncMessage = null,
+                questAlternatives = null,
             )
         }
 
@@ -660,8 +680,9 @@ class AppViewModel(
         val questId = state.activeQuestId
         val quest = repository.questById(questId)
         val current = state.progressByQuest[questId] ?: QuestProgress()
+        val attemptId = state.attemptIdByQuest[questId] ?: return
+        if (current.abandoned || current.completedSteps.size >= quest.steps.size) return
         val evidence = buildBq6AbandonmentEvidence(reason, quest, current)
-        val attemptId = state.attemptIdByQuest[questId]
 
         _uiState.update {
             it.copy(
@@ -673,7 +694,13 @@ class AppViewModel(
                 ),
                 skippedQuestIds = it.skippedQuestIds + questId,
                 attemptIdByQuest = it.attemptIdByQuest - questId,
-                screen = AppScreen.Explorer,
+                screen = AppScreen.QuestAlternatives,
+                questAlternatives = QuestAlternativesState(
+                    sourceQuestId = questId,
+                    sourceAttemptId = attemptId,
+                    reason = reason,
+                    simulatedContext = alternativeContextSimulated,
+                ),
                 progressSyncError = null,
             )
         }
@@ -697,11 +724,10 @@ class AppViewModel(
                 put("progress_percent", evidence.progressPercent)
                 put("had_photo_proof", evidence.hadPhotoProof)
                 put("uploaded_photo_proof_count", evidence.uploadedPhotoProofCount)
-                if (attemptId != null) put("attempt_id", attemptId)
+                put("attempt_id", attemptId)
             },
         )
 
-        if (attemptId == null) return
         syncProgress("Saving abandonment…") {
             progressRepository?.abandonQuest(
                 attemptId = attemptId,
@@ -710,6 +736,76 @@ class AppViewModel(
                 reason = reason.code,
             ) ?: Result.success(Unit)
         }
+        refreshQuestAlternatives()
+    }
+
+    fun refreshQuestAlternatives() {
+        val state = _uiState.value
+        val request = state.questAlternatives ?: return
+        if (state.screen != AppScreen.QuestAlternatives) return
+        alternativeJob?.cancel()
+        _uiState.update { it.copy(questAlternatives = request.copy(loading = true)) }
+        alternativeJob = viewModelScope.launch {
+            val freshContext = try {
+                withTimeoutOrNull(8_000) { alternativeContextReader() }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                null
+            }
+            ensureActive()
+            val context = freshContext ?: UserContext(
+                timeOfDay = timeOfDayFromHour(ZonedDateTime.now().hour),
+            )
+            val suggestions = alternativeRecommender.recommend(
+                catalogue = repository.allQuests(),
+                abandonedQuest = repository.questById(request.sourceQuestId),
+                reason = request.reason,
+                context = context,
+                availableMinutes = state.availableTime,
+                preferences = state.preferences,
+                excludedIds = state.skippedQuestIds + state.progressByQuest.keys + state.attemptIdByQuest.keys,
+            )
+            val currentState = _uiState.value
+            if (currentState.screen != AppScreen.QuestAlternatives ||
+                currentState.questAlternatives?.sourceAttemptId != request.sourceAttemptId) return@launch
+            val result = request.copy(loading = false, suggestions = suggestions, context = context)
+            _uiState.update { it.copy(questAlternatives = result) }
+            suggestions.forEachIndexed { index, alternative ->
+                trackAlternativeEvent("quest_alternative_shown", result, alternative, index + 1)
+            }
+        }
+    }
+
+    fun openQuestAlternative(questId: String) {
+        val result = _uiState.value.questAlternatives ?: return
+        if (result.loading || _uiState.value.screen != AppScreen.QuestAlternatives) return
+        val index = result.suggestions.indexOfFirst { it.quest.id == questId }
+        if (index < 0) return
+        trackAlternativeEvent("quest_alternative_selected", result, result.suggestions[index], index + 1)
+        openQuestDetail(questId)
+    }
+
+    fun dismissQuestAlternatives() = navigate(AppScreen.Explorer)
+
+    private fun trackAlternativeEvent(
+        eventType: String,
+        result: QuestAlternativesState,
+        alternative: QuestAlternative,
+        rank: Int,
+    ) {
+        trackEvent(eventType, alternative.quest, buildJsonObject {
+            put("algorithm_version", "lex_alternatives_v1")
+            put("source_quest_id", result.sourceQuestId)
+            put("source_attempt_id", result.sourceAttemptId)
+            put("reason_code", result.reason.code)
+            put("rank", rank)
+            put("score", alternative.score)
+            put("applied_rules", alternative.ruleCodes.joinToString(","))
+            put("time_of_day", result.context?.timeOfDay?.name?.lowercase() ?: "unknown")
+            put("weather_condition", result.context?.weather?.condition?.name?.lowercase() ?: "unknown")
+            put("context_source", if (result.simulatedContext) "simulated_debug" else "device")
+        })
     }
 
     fun submitRating(stars: Int, tags: Set<String>) {

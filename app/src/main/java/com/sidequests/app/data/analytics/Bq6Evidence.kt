@@ -4,6 +4,7 @@ import com.sidequests.app.model.AbandonmentReason
 import com.sidequests.app.model.LocationMode
 import com.sidequests.app.model.Quest
 import com.sidequests.app.model.QuestProgress
+import com.sidequests.app.model.catalogueDistanceMeters
 import kotlin.math.roundToInt
 
 data class Bq6AbandonmentEvidence(
@@ -52,15 +53,7 @@ fun buildBq6AbandonmentEvidence(
 }
 
 internal fun Quest.estimatedDistanceMeters(): Int? {
-    val match = DISTANCE_PATTERN.find(distance.lowercase()) ?: return null
-    val amount = match.groupValues[1].replace(',', '.').toDoubleOrNull() ?: return null
-    val multiplier = when (match.groupValues[2]) {
-        "mi", "mile", "miles" -> METERS_PER_MILE
-        "km", "kilometer", "kilometers" -> 1_000.0
-        "m", "meter", "meters" -> 1.0
-        else -> return null
-    }
-    return (amount * multiplier).roundToInt()
+    return catalogueDistanceMeters()
 }
 
 private fun Quest.distanceBand(distanceMeters: Int?): String = when {
@@ -71,8 +64,3 @@ private fun Quest.distanceBand(distanceMeters: Int?): String = when {
     distanceMeters < 1_500 -> "500_m_to_1_5_km"
     else -> "over_1_5_km"
 }
-
-private val DISTANCE_PATTERN = Regex(
-    """([0-9]+(?:[.,][0-9]+)?)\s*(mi|mile|miles|km|kilometer|kilometers|m|meter|meters)\b"""
-)
-private const val METERS_PER_MILE = 1_609.344
