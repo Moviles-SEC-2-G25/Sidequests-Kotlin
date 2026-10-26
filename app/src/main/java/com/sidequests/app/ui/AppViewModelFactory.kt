@@ -1,12 +1,19 @@
 package com.sidequests.app.ui
 
+import android.content.Context
 import androidx.lifecycle.ViewModel
+import com.sidequests.app.data.LocalQuestCatalogueStore
+import com.sidequests.app.data.SupabaseSidequestsRepository
+import com.sidequests.app.data.InMemorySidequestsRepository
+import com.sidequests.app.data.remote.SupabaseProvider
+import java.io.File
 import androidx.lifecycle.ViewModelProvider
 import com.sidequests.app.context.ContextManager
 import com.sidequests.app.context.UserContext
 
 class AppViewModelFactory(
     private val contextManager: ContextManager,
+    private val applicationContext: Context,
     private val alternativeContextOverride: UserContext? = null,
 ) : ViewModelProvider.Factory {
 
@@ -17,6 +24,12 @@ class AppViewModelFactory(
         }
         return AppViewModel(
             contextManager = contextManager,
+            repository = if (SupabaseProvider.isConfigured) {
+                SupabaseSidequestsRepository(
+                    SupabaseProvider.client,
+                    LocalQuestCatalogueStore(File(applicationContext.filesDir, "quest_catalogue.json")),
+                )
+            } else InMemorySidequestsRepository(),
             alternativeContextReader = { alternativeContextOverride ?: contextManager.readContext() },
             alternativeContextSimulated = alternativeContextOverride != null,
         ) as T
