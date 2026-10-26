@@ -8,10 +8,14 @@ import com.sidequests.app.model.Quest
 import com.sidequests.app.model.UserPreferences
 import io.github.jan.supabase.SupabaseClient
 import io.github.jan.supabase.postgrest.from
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
+enum class QuestCatalogueOrigin { Remote, Saved, Sample }
+
 interface SidequestsRepository {
+    fun catalogueOrigin(): QuestCatalogueOrigin = QuestCatalogueOrigin.Sample
     suspend fun refresh(): Result<Int>
     fun allQuests(): List<Quest>
     fun questById(id: String): Quest
@@ -53,13 +57,19 @@ class InMemorySidequestsRepository : SidequestsRepository {
 
 class SupabaseSidequestsRepository(
     private val client: SupabaseClient,
+    private val catalogueStore: LocalQuestCatalogueStore? = null,
 ) : SidequestsRepository {
 
     @Volatile
     private var cache: List<Quest> = QuestSeed.quests
 
-    override suspend fun refresh(): Result<Int> = runCatching {
-        withContext(Dispatchers.IO) {
+    @Volatile
+    private var origin: QuestCatalogueOrigin = QuestCatalogueOrigin.Sample
+
+    override fun catalogueOrigin(): QuestCatalogueOrigin = origin
+
+    override suspend fun refresh(): Result<Int> = withContext(Dispatchers.IO) {
+        try {
             val questRows = client.from("quests")
                 .select {
                     filter {
@@ -76,20 +86,40 @@ class SupabaseSidequestsRepository(
                 "Remote quest catalogue is empty."
             }
 
-            val localById = QuestSeed.quests.associateBy { it.id }
-            val stepsByQuest = stepRows.groupBy { it.questId }
+            val snapshot = QuestCatalogueSnapshot(quests = questRows, steps = stepRows)
+            val loaded = mapCatalogue(snapshot)
+            cache = loaded
+            origin = QuestCatalogueOrigin.Remote
 
-            cache = questRows
-                .map { dto ->
-                    dto.toDomain(
-                        remoteSteps = stepsByQuest[dto.id].orEmpty(),
-                        fallback = localById[dto.id],
-                    )
+            // A full remote response remains usable even if the device is out of storage.
+            // In that case no claim is made that the new snapshot was persisted.
+            runCatching { catalogueStore?.save(snapshot) }
+
+            Result.success(loaded.size)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            // A saved snapshot is preferred to bundled sample quests.
+            // Read on IO, not on Compose's main thread.
+            runCatching { catalogueStore?.read()?.let(::mapCatalogue) }
+                .getOrNull()
+                ?.let { saved ->
+                    cache = saved
+                    origin = QuestCatalogueOrigin.Saved
                 }
-                .sortedBy { it.title }
-
-            cache.size
+            Result.failure(error)
         }
+    }
+
+    private fun mapCatalogue(snapshot: QuestCatalogueSnapshot): List<Quest> {
+        val localById = QuestSeed.quests.associateBy { it.id }
+        val stepsByQuest = snapshot.steps.groupBy { it.questId }
+        return snapshot.quests.map { dto ->
+            dto.toDomain(
+                remoteSteps = stepsByQuest[dto.id].orEmpty(),
+                fallback = localById[dto.id],
+            )
+        }.sortedBy { it.title }
     }
 
     override fun allQuests(): List<Quest> = cache
