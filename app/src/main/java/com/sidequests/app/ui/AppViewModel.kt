@@ -9,6 +9,7 @@ import com.sidequests.app.context.ContextManager
 import com.sidequests.app.context.ContextUiState
 import com.sidequests.app.context.UserContext
 import com.sidequests.app.context.timeOfDayFromHour
+import com.sidequests.app.data.QuestCatalogueOrigin
 import com.sidequests.app.data.InMemorySidequestsRepository
 import com.sidequests.app.data.SidequestsRepository
 import com.sidequests.app.data.SupabaseSidequestsRepository
@@ -171,7 +172,11 @@ class AppViewModel(
                     _uiState.update {
                         it.copy(
                             catalogLoading = false,
-                            catalogSource = "Supabase · $count quests",
+                            catalogSource = when (repository.catalogueOrigin()) {
+                                QuestCatalogueOrigin.Remote -> "Supabase · $count quests"
+                                QuestCatalogueOrigin.Saved -> "Saved catalogue · $count quests"
+                                QuestCatalogueOrigin.Sample -> "Sample catalogue · $count quests"
+                            },
                             catalogError = null,
                         )
                     }
@@ -181,7 +186,11 @@ class AppViewModel(
                     _uiState.update {
                         it.copy(
                             catalogLoading = false,
-                            catalogSource = "Local fallback",
+                            catalogSource = when (repository.catalogueOrigin()) {
+                                QuestCatalogueOrigin.Saved -> "Saved catalogue · offline"
+                                QuestCatalogueOrigin.Remote -> "Last loaded catalogue · offline"
+                                QuestCatalogueOrigin.Sample -> "Sample catalogue · offline"
+                            },
                             catalogError = throwable.message ?: "Remote catalogue unavailable.",
                         )
                     }
