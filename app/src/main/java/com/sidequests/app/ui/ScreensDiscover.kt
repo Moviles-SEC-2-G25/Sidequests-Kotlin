@@ -351,7 +351,7 @@ fun ExplorerScreen(
         items(recommendations, key = { "rec-${it.id}" }) { quest ->
             QuestCard(
                 quest = quest,
-                onOpen = { viewModel.openQuestDetail(quest.id) },
+                onOpen = { viewModel.openQuestDetail(quest.id, fromSmartPicks = true) },
                 onSkip = { viewModel.skipQuest(quest.id) },
                 modifier = Modifier.padding(horizontal = 20.dp),
             )
