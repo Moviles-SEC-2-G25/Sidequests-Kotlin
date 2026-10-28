@@ -30,7 +30,7 @@ class MainActivity : ComponentActivity() {
                 hour = intent.getIntExtra("alternative_demo_hour", -1),
             )
         } else null
-        val factory = AppViewModelFactory(contextManager, demoContext)
+        val factory = AppViewModelFactory(contextManager, applicationContext, demoContext)
         val appViewModel = ViewModelProvider(this, factory)[AppViewModel::class.java]
 
         setContent {

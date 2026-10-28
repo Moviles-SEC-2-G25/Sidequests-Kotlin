@@ -326,7 +326,7 @@ fun ExplorerScreen(
                     Text(
                         text = when {
                             state.catalogLoading -> "Syncing quest catalogue…"
-                            state.catalogError != null -> "Offline fallback · ${state.catalogError}"
+                            state.catalogError != null -> "${state.catalogSource} · remote refresh unavailable"
                             else -> state.catalogSource
                         },
                         color = Color.White.copy(alpha = .78f),
