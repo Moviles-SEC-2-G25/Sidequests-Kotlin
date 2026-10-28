@@ -26,6 +26,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -286,6 +287,28 @@ fun ExplorerScreen(
                 onRequestLocation = onRequestLocation,
                 onRefresh = viewModel::refreshContext,
             )
+        }
+
+        // Keep the catalogue visible during an outage, but let users retry
+        // as soon as internet comes back without restarting Sidequests.
+        if (state.catalogError != null && !state.catalogLoading) {
+            item {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = "Couldn't update quests. You can try again.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(onClick = viewModel::refreshQuestCatalog) {
+                        Text("Try again")
+                    }
+                }
+            }
         }
 
         item {
