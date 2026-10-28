@@ -80,6 +80,7 @@ class AppViewModel(
     private val recommendationEngine = ContextAwareRecommendationEngine()
     private val alternativeRecommender = QuestAlternativeRecommender()
     private var alternativeJob: Job? = null
+    private var openedFromSmartPicksId: String? = null
     private val _uiState = MutableStateFlow(SidequestsUiState())
     private val _contextState = MutableStateFlow(ContextUiState())
     val uiState: StateFlow<SidequestsUiState> = _uiState.asStateFlow()
@@ -253,13 +254,15 @@ class AppViewModel(
     }
     fun navigate(screen: AppScreen) {
         if (screen != AppScreen.QuestAlternatives) alternativeJob?.cancel()
+        if (screen != AppScreen.QuestDetail) openedFromSmartPicksId = null
         _uiState.update {
             it.copy(screen = screen, questAlternatives = if (screen == AppScreen.QuestAlternatives) it.questAlternatives else null)
         }
     }
 
-    fun openQuestDetail(questId: String) {
+    fun openQuestDetail(questId: String, fromSmartPicks: Boolean = false) {
         alternativeJob?.cancel()
+        openedFromSmartPicksId = if (fromSmartPicks) questId else null
         _uiState.update { it.copy(selectedQuestId = questId, screen = AppScreen.QuestDetail, questAlternatives = null) }
     }
 
@@ -273,6 +276,13 @@ class AppViewModel(
         } ?: false
         val existingAttemptId = currentState.attemptIdByQuest[questId]
         val createsNewAttempt = existingAttemptId == null || previousAttemptFinished
+        val fromRecommendation = isRecommendationAcceptance(
+            questId = questId,
+            openedFromSmartPicksId = openedFromSmartPicksId,
+            currentRemoteRecommendations = currentState.remoteRecommendationIds,
+            startsNewAttempt = createsNewAttempt,
+        )
+        openedFromSmartPicksId = null
         val attemptId = if (createsNewAttempt) {
             UUID.randomUUID().toString()
         } else {
@@ -304,6 +314,9 @@ class AppViewModel(
                     ?: Result.success(Unit)
             }
             trackEvent("quest_accepted", quest)
+            if (fromRecommendation) {
+                trackEvent("recommendation_accepted", quest)
+            }
         }
     }
 
