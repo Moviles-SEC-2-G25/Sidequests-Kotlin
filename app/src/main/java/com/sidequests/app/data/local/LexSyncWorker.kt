@@ -50,6 +50,13 @@ class LexSyncWorker(context: Context, parameters: WorkerParameters) : CoroutineW
                     put("occurred_at", event.occurredAt)
                     event.questId?.let { put("quest_id", it) }
                     event.category?.let { put("category", it) }
+                    event.availableMinutes?.let { put("available_minutes", it) }
+                    event.socialLevel?.let { put("social_level", it) }
+                    event.locationMode?.let { put("location_mode", it) }
+                    event.questDurationMinutes?.let { put("quest_duration_minutes", it) }
+                    event.questDifficulty?.let { put("quest_difficulty", it) }
+                    event.estimatedCost?.let { put("estimated_cost", it) }
+                    event.distanceMeters?.let { put("distance_meters", it) }
                     put("metadata", event.metadata)
                 })
                 store.update { state -> state.copy(events = state.events.filterNot { it.id == event.id }) }
