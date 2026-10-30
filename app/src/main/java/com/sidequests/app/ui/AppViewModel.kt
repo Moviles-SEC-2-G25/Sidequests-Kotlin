@@ -17,6 +17,7 @@ import com.sidequests.app.data.remote.SupabaseProvider
 import com.sidequests.app.data.progress.QuestProgressRepository
 import com.sidequests.app.data.progress.SupabaseQuestProgressRepository
 import com.sidequests.app.data.analytics.AnalyticsRepository
+import com.sidequests.app.data.analytics.Bq9RecommendationOutbox
 import com.sidequests.app.data.analytics.buildRecommendationContextMetadata
 import com.sidequests.app.data.analytics.buildBq6AbandonmentEvidence
 import com.sidequests.app.data.analytics.SupabaseAnalyticsRepository
@@ -1072,8 +1073,38 @@ class AppViewModel(
     ) {
         val analytics = analyticsRepository ?: return
         val state = _uiState.value
+        val userId = attachedUserId
+        val store = localStore
 
         viewModelScope.launch {
+            // Recommendation events support BQ9's secondary funnel. Queue them
+            // before delivery so an offline request or process restart cannot
+            // silently discard a shown/accepted/skipped interaction.
+            if (Bq9RecommendationOutbox.supports(eventType) && userId != null && store != null) {
+                try {
+                    withContext(localIoDispatcher) {
+                        Bq9RecommendationOutbox.enqueue(
+                            store = store,
+                            userId = userId,
+                            sessionId = analyticsSessionId,
+                            eventType = eventType,
+                            availableMinutes = state.availableTime,
+                            preferences = state.preferences,
+                            quest = quest,
+                            metadata = metadata,
+                        )
+                    }
+                    // WorkManager shares Lex's existing durable, account-scoped
+                    // retry path; it requires network connectivity to run.
+                    scheduleLocalSync(userId)
+                    return@launch
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    // If local storage is unavailable, preserve the previous
+                    // direct-send behavior rather than blocking app navigation.
+                }
+            }
             analytics.track(
                 sessionId = analyticsSessionId,
                 eventType = eventType,
