@@ -14,6 +14,7 @@ import com.sidequests.app.context.ContextManager
 import com.sidequests.app.context.DeviceStatusMonitor
 import com.sidequests.app.context.NominatimAddressProvider
 import com.sidequests.app.context.OpenMeteoWeatherProvider
+import com.sidequests.app.data.settings.DataStoreSettingsStore
 import com.sidequests.app.sensor.light.AmbientLightMonitor
 import com.sidequests.app.ui.AppViewModel
 import com.sidequests.app.ui.AppViewModelFactory
@@ -45,6 +46,7 @@ class MainActivity : ComponentActivity() {
             applicationContext = applicationContext,
             alternativeContextOverride = demoContext,
             addressProvider = NominatimAddressProvider(),
+            settingsStore = DataStoreSettingsStore(applicationContext),
         )
         val appViewModel = ViewModelProvider(this, factory)[AppViewModel::class.java]
 

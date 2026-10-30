@@ -11,6 +11,9 @@ import com.sidequests.app.domain.DifficultySuggestion
 import com.sidequests.app.domain.SmartDifficultyAdvisor
 import com.sidequests.app.domain.SmartTimeAdvisor
 import com.sidequests.app.domain.TimeChoice
+import com.sidequests.app.data.settings.SmartHistory
+import com.sidequests.app.data.settings.ThemeSettings
+import com.sidequests.app.data.settings.SettingsStore
 import com.sidequests.app.context.label
 import com.sidequests.app.context.ContextAwareRecommendationEngine
 import com.sidequests.app.context.ContextManager
@@ -67,6 +70,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -101,6 +107,8 @@ class AppViewModel(
     private val localIoDispatcher: kotlinx.coroutines.CoroutineDispatcher = Dispatchers.IO,
     private val retryLocalSync: (String) -> Unit = scheduleLocalSync,
     private val addressProvider: AddressProvider? = null,
+    /** #31: DataStore persistence of theme and smart-feature history (null in unit tests). */
+    private val settingsStore: SettingsStore? = null,
 ) : ViewModel() {
 
     private val analyticsSessionId = UUID.randomUUID().toString()
@@ -131,6 +139,72 @@ class AppViewModel(
     init {
         refreshContext()
         refreshQuestCatalog()
+        restoreAndPersistSettings()
+    }
+
+    /** #31: user whose smart-feature history has been restored (and may now be saved). */
+    @Volatile private var historyOwner: String? = null
+
+    /**
+     * Local storage (#31): restores the device theme, then saves every change of theme and of the
+     * signed-in user's smart-feature history. Saving starts only after each restore, so defaults
+     * never overwrite what was saved.
+     */
+    private fun restoreAndPersistSettings() {
+        val store = settingsStore ?: return
+        viewModelScope.launch {
+            runCatching { store.loadTheme() }.getOrNull()?.let { theme ->
+                _uiState.update {
+                    it.copy(
+                        darkMode = theme.darkMode,
+                        autoThemeEnabled = theme.autoThemeEnabled && it.lightSensorAvailable,
+                    )
+                }
+            }
+            launch {
+                _uiState
+                    .map { ThemeSettings(it.darkMode, it.autoThemeEnabled) }
+                    .distinctUntilChanged()
+                    .collect { theme -> runCatching { store.saveTheme(theme) } }
+            }
+            _uiState
+                .map {
+                    SmartHistory(
+                        timeChoices = it.timeChoices,
+                        difficultyOutcomes = it.difficultyOutcomes,
+                        difficultySuggestionDismissedAt = it.difficultySuggestionDismissedAt,
+                        preferredDifficulty = it.preferences.difficulty,
+                    )
+                }
+                .distinctUntilChanged()
+                .collect { history ->
+                    val owner = historyOwner ?: return@collect
+                    runCatching { store.saveHistory(owner, history) }
+                }
+        }
+    }
+
+    /** #31: loads the smart-feature history of the account that just signed in. */
+    private fun restoreHistory(userId: String) {
+        val store = settingsStore ?: return
+        viewModelScope.launch {
+            val history = runCatching { store.loadHistory(userId) }.getOrNull() ?: SmartHistory()
+            // Wait until the account's saved setup (onboarding preferences) has been applied, so the
+            // saved difficulty is not overwritten by it afterwards.
+            withTimeoutOrNull(5_000) { _uiState.first { it.accountUserId == userId } }
+            if (attachedUserId != userId) return@launch
+            _uiState.update {
+                it.copy(
+                    timeChoices = history.timeChoices,
+                    difficultyOutcomes = history.difficultyOutcomes,
+                    difficultySuggestionDismissedAt = history.difficultySuggestionDismissedAt,
+                    preferences = history.preferredDifficulty
+                        ?.let { level -> it.preferences.copy(difficulty = level) }
+                        ?: it.preferences,
+                )
+            }
+            historyOwner = userId
+        }
     }
 
     /**
@@ -148,6 +222,7 @@ class AppViewModel(
     }
 
     fun detachAccount() {
+        historyOwner = null
         attachedUserId = null
         accountGeneration += 1
         photoObserver?.cancel()
@@ -157,10 +232,12 @@ class AppViewModel(
 
     fun attachAccount(userId: String) {
         if (attachedUserId == userId && _uiState.value.accountUserId == userId && _uiState.value.localStateError == null) return
+        historyOwner = null
         attachedUserId = userId
         accountGeneration += 1
         photoObserver?.cancel()
         _uiState.value = freshAccountState()
+        restoreHistory(userId)
         val store = localStore ?: run {
             _uiState.update { it.copy(accountUserId = userId) }
             return
