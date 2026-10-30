@@ -468,13 +468,19 @@ class AppViewModel(
 
         if (createsNewAttempt) {
             updateJourney({ it.firstRecommendationAccepted(questId, firstOnboardingRecommendationSource, attemptId) })
-            syncProgress("Saving accepted quest…") {
+            // BQ9 must reflect a quest acceptance confirmed by Supabase, not
+            // just an attempted tap while offline or after a server rejection.
+            syncProgress(
+                message = "Saving accepted quest…",
+                onSuccess = {
+                    trackEvent("quest_accepted", quest)
+                    if (fromRecommendation) {
+                        trackEvent("recommendation_accepted", quest)
+                    }
+                },
+            ) {
                 progressRepository?.acceptQuest(questId, attemptId)
                     ?: Result.success(Unit)
-            }
-            trackEvent("quest_accepted", quest)
-            if (fromRecommendation) {
-                trackEvent("recommendation_accepted", quest)
             }
         }
     }
@@ -1094,6 +1100,7 @@ class AppViewModel(
 
     private fun syncProgress(
         message: String,
+        onSuccess: (() -> Unit)? = null,
         operation: suspend () -> Result<Unit>,
     ) {
         viewModelScope.launch {
@@ -1114,6 +1121,7 @@ class AppViewModel(
                             progressSyncMessage = "Progress synced with Supabase",
                         )
                     }
+                    onSuccess?.invoke()
                 }
                 .onFailure { throwable ->
                     _uiState.update {
