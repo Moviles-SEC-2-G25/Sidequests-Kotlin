@@ -15,6 +15,7 @@ import com.sidequests.app.context.DeviceStatusMonitor
 import com.sidequests.app.context.NominatimAddressProvider
 import com.sidequests.app.context.OpenMeteoWeatherProvider
 import com.sidequests.app.sensor.light.AmbientLightMonitor
+import com.sidequests.app.telemetry.Bq1Telemetry
 import com.sidequests.app.ui.AppViewModel
 import com.sidequests.app.ui.AppViewModelFactory
 import com.sidequests.app.ui.SidequestsApp
@@ -45,8 +46,11 @@ class MainActivity : ComponentActivity() {
             applicationContext = applicationContext,
             alternativeContextOverride = demoContext,
             addressProvider = NominatimAddressProvider(),
+            failureReporter = Bq1Telemetry,
         )
         val appViewModel = ViewModelProvider(this, factory)[AppViewModel::class.java]
+        // BQ1 (#21): lets the app-wide lifecycle observer know whether a Nearby quest is active.
+        Bq1Telemetry.activeNearbyQuestProvider = { appViewModel.activeNearbyQuestId() }
 
         deviceStatusMonitor = DeviceStatusMonitor(applicationContext)
         ambientLightMonitor = AmbientLightMonitor(applicationContext)
@@ -74,6 +78,11 @@ class MainActivity : ComponentActivity() {
         super.onStart()
         deviceStatusMonitor.start()
         ambientLightMonitor.start()
+    }
+
+    override fun onDestroy() {
+        if (isFinishing) Bq1Telemetry.activeNearbyQuestProvider = { null }
+        super.onDestroy()
     }
 
     override fun onStop() {

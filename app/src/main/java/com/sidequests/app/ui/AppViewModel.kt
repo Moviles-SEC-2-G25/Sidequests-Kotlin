@@ -11,6 +11,8 @@ import com.sidequests.app.domain.DifficultySuggestion
 import com.sidequests.app.domain.SmartDifficultyAdvisor
 import com.sidequests.app.domain.SmartTimeAdvisor
 import com.sidequests.app.domain.TimeChoice
+import com.sidequests.app.telemetry.AppModule
+import com.sidequests.app.telemetry.FailureReporter
 import com.sidequests.app.context.label
 import com.sidequests.app.context.ContextAwareRecommendationEngine
 import com.sidequests.app.context.ContextManager
@@ -43,6 +45,7 @@ import com.sidequests.app.data.photo.photoEvent
 import com.sidequests.app.data.recommendation.RecommendationRepository
 import com.sidequests.app.data.recommendation.SupabaseRecommendationRepository
 import com.sidequests.app.model.AppScreen
+import com.sidequests.app.model.LocationMode
 import com.sidequests.app.model.AbandonmentReason
 import com.sidequests.app.model.Quest
 import com.sidequests.app.model.QuestDifficulty
@@ -101,6 +104,8 @@ class AppViewModel(
     private val localIoDispatcher: kotlinx.coroutines.CoroutineDispatcher = Dispatchers.IO,
     private val retryLocalSync: (String) -> Unit = scheduleLocalSync,
     private val addressProvider: AddressProvider? = null,
+    /** BQ1 (#22): non-fatal module failures are reported here (no-op by default/in tests). */
+    private val failureReporter: FailureReporter = FailureReporter.NONE,
 ) : ViewModel() {
 
     private val analyticsSessionId = UUID.randomUUID().toString()
@@ -308,6 +313,7 @@ class AppViewModel(
                     lookupAddress(context.location)
                 }
                 .onFailure { error ->
+                    failureReporter.report(AppModule.CONTEXT, error, null)
                     _contextState.update {
                         it.copy(
                             loading = false,
@@ -330,7 +336,11 @@ class AppViewModel(
             return
         }
         viewModelScope.launch {
-            val address = runCatching { provider.addressFor(location) }.getOrNull()
+            val result = runCatching { provider.addressFor(location) }
+            val address = result.getOrNull()
+            if (address == null) {
+                failureReporter.report(AppModule.GEOCODING, result.exceptionOrNull(), "Reverse geocoding returned no address")
+            }
             _contextState.update {
                 if (address != null) it.copy(address = address, addressError = null)
                 else it.copy(addressError = ADDRESS_UNAVAILABLE_MESSAGE)
@@ -405,6 +415,15 @@ class AppViewModel(
     fun activeProgress(): QuestProgress =
         _uiState.value.progressByQuest[_uiState.value.activeQuestId] ?: QuestProgress()
 
+    /** BQ1 (#21): id of the active location-based (Nearby/GPS) quest, or null. */
+    fun activeNearbyQuestId(): String? {
+        if (!hasActiveQuest()) return null
+        val quest = activeQuest()
+        val progress = activeProgress()
+        if (progress.abandoned || progress.completedSteps.size >= quest.steps.size) return null
+        return quest.id.takeIf { quest.location == LocationMode.Gps }
+    }
+
     fun hasActiveQuest(): Boolean {
         val state = _uiState.value
         return state.activeQuestId in state.attemptIdByQuest
@@ -465,6 +484,7 @@ class AppViewModel(
                     refreshRecommendations()
                 }
                 .onFailure { throwable ->
+                    failureReporter.report(AppModule.CATALOG, throwable, null)
                     _uiState.update {
                         it.copy(
                             catalogLoading = false,
@@ -525,6 +545,7 @@ class AppViewModel(
                 }
                 .onFailure { throwable ->
                     if (generation != accountGeneration) return@onFailure
+                    failureReporter.report(AppModule.RECOMMENDATIONS, throwable, null)
                     _uiState.update {
                         it.copy(
                             recommendationLoading = false,
@@ -1058,7 +1079,8 @@ class AppViewModel(
                         },
                     )
                 }
-                .onFailure {
+                .onFailure { uploadError ->
+                    failureReporter.report(AppModule.PHOTO_PROOF, uploadError, null)
                     _uiState.update { state ->
                         val current = state.progressByQuest[questId] ?: QuestProgress()
                         state.copy(
@@ -1372,6 +1394,7 @@ class AppViewModel(
                     onSuccess?.invoke()
                 }
                 .onFailure { throwable ->
+                    failureReporter.report(AppModule.QUEST_PROGRESS, throwable, null)
                     _uiState.update {
                         it.copy(
                             progressSyncing = false,
