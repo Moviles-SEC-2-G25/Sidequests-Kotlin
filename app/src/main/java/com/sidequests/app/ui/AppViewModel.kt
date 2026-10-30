@@ -1075,6 +1075,8 @@ class AppViewModel(
         val state = _uiState.value
         val userId = attachedUserId
         val store = localStore
+        // Capture the interaction time before asynchronous file I/O begins.
+        val eventOccurredAt = java.time.Instant.now().toString()
 
         viewModelScope.launch {
             // Recommendation events support BQ9's secondary funnel. Queue them
@@ -1092,6 +1094,7 @@ class AppViewModel(
                             preferences = state.preferences,
                             quest = quest,
                             metadata = metadata,
+                            occurredAt = eventOccurredAt,
                         )
                     }
                 } catch (cancelled: CancellationException) {
