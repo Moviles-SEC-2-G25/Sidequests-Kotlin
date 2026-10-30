@@ -2,6 +2,8 @@ package com.sidequests.app.context
 
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
@@ -98,5 +100,65 @@ class ContextManagerTest {
         assertEquals(location, context.location)
         assertNull(context.weather)
         assertEquals(TimeOfDay.AFTERNOON, context.timeOfDay)
+    }
+
+    @Test
+    fun propagatesLocationFailureWithoutRequestingWeather() = runBlocking {
+        var weatherRequested = false
+        val manager = ContextManager(
+            locationProvider = object : LocationProvider {
+                override suspend fun getCurrentLocation(): LocationData? {
+                    throw IllegalStateException("Location unavailable")
+                }
+            },
+            weatherProvider = object : WeatherProvider {
+                override suspend fun getWeather(location: LocationData): WeatherData? {
+                    weatherRequested = true
+                    return null
+                }
+            },
+            timeProvider = object : TimeProvider {
+                override fun now(): ZonedDateTime = fixedTime
+            },
+        )
+
+        try {
+            manager.readContext()
+            throw AssertionError("Expected the location failure to propagate")
+        } catch (error: IllegalStateException) {
+            assertEquals("Location unavailable", error.message)
+        }
+
+        assertTrue(!weatherRequested)
+    }
+
+    @Test
+    fun cancellationWhileWaitingForLocationCancelsTheContextRead() = runBlocking {
+        val locationStarted = CompletableDeferred<Unit>()
+        val pendingLocation = CompletableDeferred<LocationData?>()
+        var weatherRequested = false
+        val manager = ContextManager(
+            locationProvider = object : LocationProvider {
+                override suspend fun getCurrentLocation(): LocationData? {
+                    locationStarted.complete(Unit)
+                    return pendingLocation.await()
+                }
+            },
+            weatherProvider = object : WeatherProvider {
+                override suspend fun getWeather(location: LocationData): WeatherData? {
+                    weatherRequested = true
+                    return null
+                }
+            },
+            timeProvider = object : TimeProvider {
+                override fun now(): ZonedDateTime = fixedTime
+            },
+        )
+
+        val readJob = launch { manager.readContext() }
+        withTimeout(2_000) { locationStarted.await() }
+        readJob.cancelAndJoin()
+
+        assertTrue(!weatherRequested)
     }
 }
