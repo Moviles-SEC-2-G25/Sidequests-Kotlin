@@ -93,6 +93,8 @@ fun SidequestsApp(
                 } else AuthenticatedSidequestsContent(
                     state = appState,
                     viewModel = appViewModel,
+                    authViewModel = authViewModel,
+                    accountEmail = authState.userEmail,
                     onSignOut = authViewModel::signOut,
                     onRequestLocation = {
                         locationPermissionLauncher.launch(
@@ -112,9 +114,15 @@ fun SidequestsApp(
 private fun AuthenticatedSidequestsContent(
     state: SidequestsUiState,
     viewModel: AppViewModel,
+    authViewModel: AuthViewModel,
+    accountEmail: String?,
     onSignOut: () -> Unit,
     onRequestLocation: () -> Unit,
 ) {
+    val deviceStatus by viewModel.deviceStatus.collectAsStateWithLifecycle()
+    val contextState by viewModel.contextState.collectAsStateWithLifecycle()
+    val passwordState by authViewModel.passwordState.collectAsStateWithLifecycle()
+
     LaunchedEffect(Unit) {
         viewModel.refreshQuestCatalog()
     }
@@ -133,6 +141,10 @@ private fun AuthenticatedSidequestsContent(
             .safeDrawingPadding()
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
+            DeviceStatusBanner(
+                status = deviceStatus,
+                onRetry = viewModel::retryNetworkWork,
+            )
             if (state.pendingPhotoUploads > 0) {
                 PendingPhotoUploadsBanner(state.pendingPhotoUploads, viewModel::retryPendingPhotoUploads)
             }
@@ -152,7 +164,7 @@ private fun AuthenticatedSidequestsContent(
                     AppScreen.Explorer -> ExplorerScreen(
                         state = state,
                         viewModel = viewModel,
-                        contextState = viewModel.contextState.collectAsStateWithLifecycle().value,
+                        contextState = contextState,
                         onRequestLocation = onRequestLocation,
                     )
 
@@ -193,6 +205,14 @@ private fun AuthenticatedSidequestsContent(
                         state = state,
                         viewModel = viewModel,
                         onSignOut = onSignOut,
+                        accountEmail = accountEmail,
+                        address = contextState.address,
+                        isOnline = deviceStatus.isOnline,
+                        passwordState = passwordState,
+                        onChangePassword = { newPassword, confirmation ->
+                            authViewModel.changePassword(newPassword, confirmation, deviceStatus.isOnline)
+                        },
+                        onClearPasswordFeedback = authViewModel::clearPasswordFeedback,
                     )
                 }
             }

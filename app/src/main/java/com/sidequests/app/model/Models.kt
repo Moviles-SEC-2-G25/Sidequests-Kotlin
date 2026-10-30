@@ -88,6 +88,10 @@ data class SidequestsUiState(
     val screen: AppScreen = AppScreen.Onboarding,
     val onboardingStep: Int = 0,
     val darkMode: Boolean = false,
+    /** Theme follows the ambient light sensor instead of the manual toggle. */
+    val autoThemeEnabled: Boolean = false,
+    val lightSensorAvailable: Boolean = false,
+    val ambientLux: Float? = null,
     val selectedQuestId: String = "botanical-garden",
     val activeQuestId: String = "botanical-garden",
     val preferences: UserPreferences = UserPreferences(),
@@ -110,4 +114,13 @@ data class SidequestsUiState(
     val notificationQuestId: String? = null,
     val contextualNotificationShown: Boolean = false,
     val questAlternatives: QuestAlternativesState? = null,
+    /** Smart feature: recent completed/abandoned attempts (most recent last). */
+    val difficultyOutcomes: List<com.sidequests.app.domain.DifficultyOutcome> = emptyList(),
+    /** Smart feature: history size when the user dismissed the last suggestion. */
+    val difficultySuggestionDismissedAt: Int? = null,
+    /** Smart feature: explicit "I have X minutes" choices by part of the day. */
+    val timeChoices: List<com.sidequests.app.domain.TimeChoice> = emptyList(),
+    /** Smart feature: part of the day for which the smart time was already applied this session. */
+    val smartTimeAppliedFor: com.sidequests.app.context.TimeOfDay? = null,
+    val smartTimeHint: String? = null,
 )
