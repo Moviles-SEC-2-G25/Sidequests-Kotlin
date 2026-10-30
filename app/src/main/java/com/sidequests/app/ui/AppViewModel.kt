@@ -254,10 +254,10 @@ class AppViewModel(
     }
 
     private fun persistSetupPreferences() {
-        if (_uiState.value.screen == AppScreen.Onboarding) {
-            val preferences = _uiState.value.preferences
-            updateJourney({ it.savePreferences(preferences) }, schedule = false)
-        }
+        // Explorer choices are user preferences too, not just onboarding answers.
+        if (attachedUserId == null || localStore == null) return
+        val preferences = _uiState.value.preferences
+        updateJourney({ it.savePreferences(preferences) }, schedule = false)
     }
 
     private fun persistPhotoProgress(questId: String, attemptId: String, progress: QuestProgress, closed: Boolean = false) {
@@ -560,6 +560,17 @@ class AppViewModel(
         } ?: false
         val existingAttemptId = currentState.attemptIdByQuest[questId]
         val createsNewAttempt = existingAttemptId == null || previousAttemptFinished
+        // Offline browsing is supported, but starting a new attempt is still a
+        // server-authoritative operation. Do not create orphaned photos/progress.
+        if (createsNewAttempt && progressRepository != null && !_deviceStatus.value.isOnline) {
+            _uiState.update {
+                it.copy(
+                    progressSyncError = "Connect to the internet before accepting a new quest.",
+                    progressSyncMessage = null,
+                )
+            }
+            return
+        }
         val fromRecommendation = isRecommendationAcceptance(
             questId = questId,
             openedFromSmartPicksId = openedFromSmartPicksId,
@@ -634,11 +645,13 @@ class AppViewModel(
         _uiState.update {
             it.copy(
                 availableTime = minutes,
+                preferences = it.preferences.copy(typicalTime = minutes),
                 remoteRecommendationIds = emptyList(),
                 timeChoices = (it.timeChoices + choice).takeLast(SmartTimeAdvisor.HISTORY_SIZE),
                 smartTimeHint = null,
             )
         }
+        persistSetupPreferences()
         refreshRecommendations()
     }
 
@@ -800,6 +813,7 @@ class AppViewModel(
                 remoteRecommendationIds = emptyList(),
             )
         }
+        persistSetupPreferences()
 
         val eventType = when (normalized) {
             "anywhere" -> "location_independent_mode_selected"
