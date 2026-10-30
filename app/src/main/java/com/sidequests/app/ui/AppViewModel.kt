@@ -148,6 +148,7 @@ class AppViewModel(
                         attemptIdByQuest = open.associate { it.questId to it.attemptId },
                         progressByQuest = open.associate { it.questId to QuestProgress(currentStep = it.currentStep, completedSteps = it.completedSteps) },
                         activeQuestId = open.last().questId,
+                        screen = if (repository.questById(open.last().questId).isGroup) AppScreen.GroupQuest else AppScreen.ActiveQuest,
                     ) }
                 }
                 applyStoredPhotos(saved, userId)
@@ -237,7 +238,7 @@ class AppViewModel(
                     }
                 }
             } catch (cancelled: CancellationException) { throw cancelled }
-              catch (_: Exception) { _uiState.update { it.copy(localStateError = "Photo progress could not be saved on this device. Please try again.") } }
+              catch (_: Exception) { _uiState.update { it.copy(localStateError = "Quest progress could not be saved on this device. Please try again.") } }
         }
     }
 
