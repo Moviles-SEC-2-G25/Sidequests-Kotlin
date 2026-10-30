@@ -224,7 +224,7 @@ class AppViewModel(
         }
     }
 
-    private fun persistPhotoProgress(questId: String, attemptId: String, progress: QuestProgress, closed: Boolean = false) {
+    private fun persistActiveQuestProgress(questId: String, attemptId: String, progress: QuestProgress, closed: Boolean = false) {
         val store = localStore ?: return
         val userId = attachedUserId ?: return
         viewModelScope.launch {
@@ -232,8 +232,7 @@ class AppViewModel(
                 photoMutex.withLock {
                     withContext(localIoDispatcher) {
                         store.update { saved ->
-                            if (saved.photos.none { it.attemptId == attemptId && it.userId == userId }) saved
-                            else saved.copy(photoQuests = saved.photoQuests + (attemptId to PhotoQuestSnapshot(userId, questId, attemptId, progress.currentStep, progress.completedSteps, closed)))
+                            saved.copy(photoQuests = saved.photoQuests + (attemptId to PhotoQuestSnapshot(userId, questId, attemptId, progress.currentStep, progress.completedSteps, closed)))
                         }
                     }
                 }
@@ -463,6 +462,9 @@ class AppViewModel(
             )
         }
 
+        val acceptedProgress = _uiState.value.progressByQuest[questId] ?: QuestProgress()
+        persistActiveQuestProgress(questId, attemptId, acceptedProgress)
+
         if (createsNewAttempt) {
             updateJourney({ it.firstRecommendationAccepted(questId, firstOnboardingRecommendationSource, attemptId) })
             syncProgress("Saving accepted quest…") {
@@ -660,7 +662,7 @@ class AppViewModel(
         }
 
         val attemptId = _uiState.value.attemptIdByQuest[questId] ?: return
-        persistPhotoProgress(questId, attemptId, _uiState.value.progressByQuest.getValue(questId), closed = completed)
+        persistActiveQuestProgress(questId, attemptId, _uiState.value.progressByQuest.getValue(questId), closed = completed)
         syncProgress(if (completed) "Saving completed quest…" else "Saving progress…") {
             progressRepository?.updateProgress(
                 attemptId = attemptId,
@@ -675,8 +677,12 @@ class AppViewModel(
         val state = _uiState.value
         val questId = state.activeQuestId
         val current = state.progressByQuest[questId] ?: QuestProgress()
+        val updated = current.copy(currentStep = step.coerceIn(0, 3))
         _uiState.update {
-            it.copy(progressByQuest = it.progressByQuest + (questId to current.copy(currentStep = step.coerceIn(0, 3))))
+            it.copy(progressByQuest = it.progressByQuest + (questId to updated))
+        }
+        state.attemptIdByQuest[questId]?.let { attemptId ->
+            persistActiveQuestProgress(questId, attemptId, updated)
         }
     }
 
@@ -889,7 +895,7 @@ class AppViewModel(
         )
 
         val attemptId = state.attemptIdByQuest[questId] ?: return
-        persistPhotoProgress(questId, attemptId, current)
+        persistActiveQuestProgress(questId, attemptId, current)
         syncProgress("Saving quest progress…") {
             progressRepository?.saveProgress(
                 attemptId = attemptId,
@@ -908,7 +914,7 @@ class AppViewModel(
         val attemptId = state.attemptIdByQuest[questId] ?: return
         if (current.abandoned || current.completedSteps.size >= quest.steps.size) return
         val evidence = buildBq6AbandonmentEvidence(reason, quest, current)
-        persistPhotoProgress(questId, attemptId, current, closed = true)
+        persistActiveQuestProgress(questId, attemptId, current, closed = true)
 
         _uiState.update {
             it.copy(
@@ -1050,6 +1056,12 @@ class AppViewModel(
         }
 
         val attemptId = state.attemptIdByQuest[questId] ?: return
+        persistActiveQuestProgress(
+            questId = questId,
+            attemptId = attemptId,
+            progress = state.progressByQuest[questId] ?: QuestProgress(),
+            closed = true,
+        )
         syncProgress("Saving rating…") {
             progressRepository?.rateQuest(
                 attemptId = attemptId,
