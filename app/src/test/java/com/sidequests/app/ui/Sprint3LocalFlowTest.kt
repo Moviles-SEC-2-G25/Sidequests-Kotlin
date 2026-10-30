@@ -166,6 +166,8 @@ class Sprint3LocalFlowTest {
         scheduled.receive()
         vm.acceptQuest("botanical-garden")
         advanceUntilIdle()
+        vm.completeCurrentStep()
+        advanceUntilIdle()
         vm.jumpToStep(2)
         advanceUntilIdle()
 
@@ -173,7 +175,7 @@ class Sprint3LocalFlowTest {
         assertEquals("alice", saved.userId)
         assertEquals("botanical-garden", saved.questId)
         assertEquals(2, saved.currentStep)
-        assertTrue(saved.completedSteps.isEmpty())
+        assertEquals(setOf(0), saved.completedSteps)
         assertTrue(!saved.closed)
         assertTrue(store().read().photos.isEmpty())
 
@@ -186,6 +188,8 @@ class Sprint3LocalFlowTest {
 
         assertEquals(saved.attemptId, restored.uiState.value.attemptIdByQuest["botanical-garden"])
         assertEquals(2, restored.activeProgress().currentStep)
+        assertEquals(setOf(0), restored.activeProgress().completedSteps)
+        assertEquals(AppScreen.ActiveQuest, restored.uiState.value.screen)
         assertTrue(restored.hasActiveQuest())
     }
 
