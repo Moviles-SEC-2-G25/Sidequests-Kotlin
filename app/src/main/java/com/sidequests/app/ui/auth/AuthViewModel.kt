@@ -20,6 +20,7 @@ enum class AuthStage {
 }
 
 data class AuthUiState(
+    val userId: String? = null,
     val stage: AuthStage = AuthStage.Initializing,
     val isBusy: Boolean = false,
     val userEmail: String? = null,
@@ -73,6 +74,7 @@ class AuthViewModel(
                             _uiState.update {
                                 it.copy(
                                     stage = AuthStage.SignedIn,
+                                    userId = status.session.user?.id,
                                     isBusy = false,
                                     userEmail = status.session.user?.email,
                                     message = null,
@@ -85,6 +87,7 @@ class AuthViewModel(
                             _uiState.update {
                                 it.copy(
                                     stage = AuthStage.SignedOut,
+                                    userId = null,
                                     isBusy = false,
                                     userEmail = null,
                                 )

@@ -34,6 +34,8 @@ data class QuestDto(
     val isSponsored: Boolean = false,
     @SerialName("sponsor_name")
     val sponsorName: String? = null,
+    @SerialName("sponsor_business_category")
+    val sponsorBusinessCategory: String? = null,
     @SerialName("is_group")
     val isGroup: Boolean = false,
 )

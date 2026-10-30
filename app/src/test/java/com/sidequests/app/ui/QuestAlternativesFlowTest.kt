@@ -1,5 +1,7 @@
 package com.sidequests.app.ui
 
+import androidx.lifecycle.ViewModelStore
+import androidx.lifecycle.viewModelScope
 import com.sidequests.app.context.*
 import com.sidequests.app.data.InMemorySidequestsRepository
 import com.sidequests.app.data.analytics.AnalyticsRepository
@@ -7,7 +9,9 @@ import com.sidequests.app.data.progress.QuestProgressRepository
 import com.sidequests.app.model.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.test.*
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -19,12 +23,23 @@ import org.junit.Test
 @OptIn(ExperimentalCoroutinesApi::class)
 class QuestAlternativesFlowTest {
     private val dispatcher = StandardTestDispatcher()
+    private val models = ViewModelStore()
+    private val viewModelJobs = mutableListOf<Job>()
     private val progress = RecordingProgress()
     private val analytics = RecordingAnalytics()
     private val context = UserContext(timeOfDay = TimeOfDay.AFTERNOON, weather = WeatherData(20.0, WeatherCondition.CLEAR))
 
     @Before fun setup() { Dispatchers.setMain(dispatcher) }
-    @After fun cleanup() { Dispatchers.resetMain() }
+    @After fun cleanup() {
+        try {
+            runTest(dispatcher) {
+                models.clear()
+                viewModelJobs.joinAll()
+            }
+        } finally {
+            Dispatchers.resetMain()
+        }
+    }
 
     private fun viewModel(reader: suspend () -> UserContext = { context }, simulated: Boolean = false): AppViewModel {
         val location = object : LocationProvider { override suspend fun getCurrentLocation(): LocationData? = null }
@@ -37,7 +52,10 @@ class QuestAlternativesFlowTest {
             photoProofRepository = null,
             alternativeContextReader = reader,
             alternativeContextSimulated = simulated,
-        )
+        ).also {
+            models.put("vm-${viewModelJobs.size}", it)
+            viewModelJobs += requireNotNull(it.viewModelScope.coroutineContext[Job])
+        }
     }
 
     @Test fun `abandonment is recorded once and suggestions never automatically accept a quest`() = runTest {
@@ -70,6 +88,25 @@ class QuestAlternativesFlowTest {
         assertEquals(2, progress.accepted.size)
         assertNotEquals(sourceAttempt, vm.uiState.value.attemptIdByQuest[alternativeId])
         assertEquals(1, analytics.events.count { it.type == "quest_alternative_selected" })
+    }
+
+    @Test fun `failed remote acceptance is not counted as a successful analytics event`() = runTest {
+        progress.failNextAccept = true
+        val vm = viewModel()
+        vm.acceptQuest("botanical-garden")
+        advanceUntilIdle()
+        assertNotNull(vm.uiState.value.progressSyncError)
+        assertFalse(analytics.events.any {
+            it.type == "quest_accepted" || it.type == "recommendation_accepted"
+        })
+    }
+
+    @Test fun `confirmed remote acceptance produces a quest accepted event`() = runTest {
+        val vm = viewModel()
+        vm.acceptQuest("botanical-garden")
+        advanceUntilIdle()
+        assertNull(vm.uiState.value.progressSyncError)
+        assertEquals(1, analytics.events.count { it.type == "quest_accepted" })
     }
 
     @Test fun `save progress keeps the attempt and does not request alternatives or record abandonment`() = runTest {
@@ -152,10 +189,15 @@ class QuestAlternativesFlowTest {
         }
     }
     private class RecordingProgress : QuestProgressRepository {
+        var failNextAccept = false
         val accepted = mutableListOf<Pair<String, String>>()
         val abandonments = mutableListOf<Pair<String, String?>>()
         val saved = mutableListOf<String>()
         override suspend fun acceptQuest(questId: String, attemptId: String): Result<Unit> {
+            if (failNextAccept) {
+                failNextAccept = false
+                return Result.failure(IllegalStateException("Supabase is unavailable"))
+            }
             accepted += questId to attemptId
             return Result.success(Unit)
         }

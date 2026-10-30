@@ -186,14 +186,22 @@ fun ActiveQuestScreen(
     }
     var pendingPhotoPath by rememberSaveable { mutableStateOf<String?>(null) }
     var pendingPhotoStep by rememberSaveable { mutableIntStateOf(-1) }
+    var pendingAttemptId by rememberSaveable { mutableStateOf<String?>(null) }
+    var pendingOwnerId by rememberSaveable { mutableStateOf<String?>(null) }
     val photoLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { captured ->
         val file = pendingPhotoPath?.let(::File)
         val stepIndex = pendingPhotoStep
+        val attemptId = pendingAttemptId
+        val ownerId = pendingOwnerId
         pendingPhotoPath = null
         pendingPhotoStep = -1
+        pendingAttemptId = null
+        pendingOwnerId = null
 
         if (captured && file != null && file.length() > 0 && stepIndex >= 0) {
-            viewModel.markPhotoProofCaptured(stepIndex, file.absolutePath)
+            if (attemptId != null && ownerId != null) {
+                viewModel.markPhotoProofCaptured(stepIndex, file.absolutePath, attemptId, ownerId)
+            } else cameraService.discardCapture(file)
         } else {
             if (file != null) cameraService.discardCapture(file)
             if (captured && stepIndex >= 0) {
@@ -293,6 +301,8 @@ fun ActiveQuestScreen(
                                     .onSuccess { capture ->
                                         pendingPhotoPath = capture.file.absolutePath
                                         pendingPhotoStep = capture.stepIndex
+                                        pendingAttemptId = viewModel.uiState.value.attemptIdByQuest[quest.id]
+                                        pendingOwnerId = viewModel.uiState.value.accountUserId
                                         photoLauncher.launch(capture.uri)
                                     }
                                     .onFailure {
