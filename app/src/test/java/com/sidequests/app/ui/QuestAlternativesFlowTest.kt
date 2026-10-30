@@ -1,5 +1,7 @@
 package com.sidequests.app.ui
 
+import androidx.lifecycle.ViewModelStore
+import androidx.lifecycle.viewModelScope
 import com.sidequests.app.context.*
 import com.sidequests.app.data.InMemorySidequestsRepository
 import com.sidequests.app.data.analytics.AnalyticsRepository
@@ -7,7 +9,9 @@ import com.sidequests.app.data.progress.QuestProgressRepository
 import com.sidequests.app.model.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.test.*
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -19,12 +23,23 @@ import org.junit.Test
 @OptIn(ExperimentalCoroutinesApi::class)
 class QuestAlternativesFlowTest {
     private val dispatcher = StandardTestDispatcher()
+    private val models = ViewModelStore()
+    private val viewModelJobs = mutableListOf<Job>()
     private val progress = RecordingProgress()
     private val analytics = RecordingAnalytics()
     private val context = UserContext(timeOfDay = TimeOfDay.AFTERNOON, weather = WeatherData(20.0, WeatherCondition.CLEAR))
 
     @Before fun setup() { Dispatchers.setMain(dispatcher) }
-    @After fun cleanup() { Dispatchers.resetMain() }
+    @After fun cleanup() {
+        try {
+            runTest(dispatcher) {
+                models.clear()
+                viewModelJobs.joinAll()
+            }
+        } finally {
+            Dispatchers.resetMain()
+        }
+    }
 
     private fun viewModel(reader: suspend () -> UserContext = { context }, simulated: Boolean = false): AppViewModel {
         val location = object : LocationProvider { override suspend fun getCurrentLocation(): LocationData? = null }
@@ -37,7 +52,10 @@ class QuestAlternativesFlowTest {
             photoProofRepository = null,
             alternativeContextReader = reader,
             alternativeContextSimulated = simulated,
-        )
+        ).also {
+            models.put("vm-${viewModelJobs.size}", it)
+            viewModelJobs += requireNotNull(it.viewModelScope.coroutineContext[Job])
+        }
     }
 
     @Test fun `abandonment is recorded once and suggestions never automatically accept a quest`() = runTest {

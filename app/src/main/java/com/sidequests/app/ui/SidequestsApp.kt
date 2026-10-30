@@ -7,14 +7,22 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -35,6 +43,11 @@ fun SidequestsApp(
 ) {
     val appState by appViewModel.uiState.collectAsStateWithLifecycle()
     val authState by authViewModel.uiState.collectAsStateWithLifecycle()
+
+    LaunchedEffect(authState.stage, authState.userId) {
+        if (authState.stage == AuthStage.SignedIn) authState.userId?.let(appViewModel::attachAccount)
+        else if (authState.stage == AuthStage.SignedOut) appViewModel.detachAccount()
+    }
 
     val locationPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -70,7 +83,14 @@ fun SidequestsApp(
             }
 
             AuthStage.SignedIn -> {
-                AuthenticatedSidequestsContent(
+                if (appState.accountUserId != authState.userId || authState.userId == null) {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+                } else if (appState.localStateError != null) {
+                    Column(Modifier.padding(24.dp)) {
+                        Text(requireNotNull(appState.localStateError))
+                        TextButton(onClick = { authState.userId?.let(appViewModel::attachAccount) }) { Text("Try again") }
+                    }
+                } else AuthenticatedSidequestsContent(
                     state = appState,
                     viewModel = appViewModel,
                     onSignOut = authViewModel::signOut,
@@ -110,8 +130,12 @@ private fun AuthenticatedSidequestsContent(
         modifier = Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
+            .safeDrawingPadding()
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
+            if (state.pendingPhotoUploads > 0) {
+                PendingPhotoUploadsBanner(state.pendingPhotoUploads, viewModel::retryPendingPhotoUploads)
+            }
             Box(modifier = Modifier.weight(1f)) {
                 when (state.screen) {
                     AppScreen.Auth -> AuthScreen(
@@ -213,6 +237,34 @@ private fun AuthenticatedSidequestsContent(
                             .padding(top = 28.dp),
                     )
                 }
+        }
+    }
+}
+
+@Composable
+private fun PendingPhotoUploadsBanner(count: Int, onRetry: () -> Unit) {
+    Surface(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.secondaryContainer,
+        contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Text(
+                text = if (count == 1) "1 photo waiting to upload" else "$count photos waiting to upload",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                text = "Saved on this device. Upload resumes when connected.",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            TextButton(onClick = onRetry, modifier = Modifier.align(Alignment.End)) {
+                Text("Retry upload")
+            }
         }
     }
 }
