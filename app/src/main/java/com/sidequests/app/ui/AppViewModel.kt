@@ -1094,16 +1094,27 @@ class AppViewModel(
                             metadata = metadata,
                         )
                     }
-                    // WorkManager shares Lex's existing durable, account-scoped
-                    // retry path; it requires network connectivity to run.
-                    scheduleLocalSync(userId)
-                    return@launch
                 } catch (cancelled: CancellationException) {
                     throw cancelled
                 } catch (_: Exception) {
                     // If local storage is unavailable, preserve the previous
                     // direct-send behavior rather than blocking app navigation.
+                    analytics.track(
+                        sessionId = analyticsSessionId,
+                        eventType = eventType,
+                        availableMinutes = state.availableTime,
+                        preferences = state.preferences,
+                        quest = quest,
+                        metadata = metadata,
+                    )
+                    return@launch
                 }
+                // Once persisted, a scheduler error must not trigger a second
+                // direct send. It will be rescheduled when this account resumes.
+                try {
+                    scheduleLocalSync(userId)
+                } catch (_: Exception) { /* safely retained on disk */ }
+                return@launch
             }
             analytics.track(
                 sessionId = analyticsSessionId,
