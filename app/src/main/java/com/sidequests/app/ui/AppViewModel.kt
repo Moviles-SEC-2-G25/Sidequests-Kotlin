@@ -4,9 +4,19 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.sidequests.app.BuildConfig
+import com.sidequests.app.context.AddressProvider
+import com.sidequests.app.domain.DifficultyOutcome
+import com.sidequests.app.domain.DifficultyStreaks
+import com.sidequests.app.domain.DifficultySuggestion
+import com.sidequests.app.domain.SmartDifficultyAdvisor
+import com.sidequests.app.domain.SmartTimeAdvisor
+import com.sidequests.app.domain.TimeChoice
+import com.sidequests.app.context.label
 import com.sidequests.app.context.ContextAwareRecommendationEngine
 import com.sidequests.app.context.ContextManager
 import com.sidequests.app.context.ContextUiState
+import com.sidequests.app.context.DeviceStatus
+import com.sidequests.app.context.LocationData
 import com.sidequests.app.context.UserContext
 import com.sidequests.app.context.timeOfDayFromHour
 import com.sidequests.app.data.InMemorySidequestsRepository
@@ -73,6 +83,7 @@ class AppViewModel(
         } else null,
     private val alternativeContextReader: suspend () -> UserContext = { contextManager.readContext() },
     private val alternativeContextSimulated: Boolean = false,
+    private val addressProvider: AddressProvider? = null,
 ) : ViewModel() {
 
     private val analyticsSessionId = UUID.randomUUID().toString()
@@ -84,21 +95,49 @@ class AppViewModel(
     val uiState: StateFlow<SidequestsUiState> = _uiState.asStateFlow()
     val contextState: StateFlow<ContextUiState> = _contextState.asStateFlow()
 
+    // Context-aware feature: latest connectivity/battery snapshot from DeviceStatusMonitor.
+    private val _deviceStatus = MutableStateFlow(DeviceStatus())
+    val deviceStatus: StateFlow<DeviceStatus> = _deviceStatus.asStateFlow()
+
+    // Smart feature: when the last context was read, used by the battery-aware refresh policy.
+    private var lastContextReadAtMillis: Long = 0L
+
+    // Sensor feature: last decision from the ambient light sensor (null until the first reading).
+    private var lastAmbientDark: Boolean? = null
+
     init {
         refreshContext()
         refreshQuestCatalog()
     }
 
-    fun refreshContext() {
+    /**
+     * Smart feature (battery-aware context): with low battery and no charger, GPS + weather are
+     * not requested again if the last context is recent enough; the last context is reused and
+     * the UI says so. [force] (manual refresh, reconnection) always reads a new context.
+     */
+    fun refreshContext(force: Boolean = false) {
+        val recentContext = lastContextReadAtMillis > 0L &&
+            System.currentTimeMillis() - lastContextReadAtMillis < BATTERY_SAVER_REUSE_MILLIS
+        if (!force && _deviceStatus.value.isLowBattery && recentContext) {
+            _contextState.update { it.copy(loading = false, batterySaverActive = true) }
+            return
+        }
+
         viewModelScope.launch {
             _contextState.update { it.copy(loading = true, error = null) }
             runCatching { contextManager.readContext() }
                 .onSuccess { context ->
+                    lastContextReadAtMillis = System.currentTimeMillis()
+                    val previous = _contextState.value
                     _contextState.value = ContextUiState(
                         loading = false,
                         context = context,
                         error = null,
+                        address = previous.address,
+                        addressError = previous.addressError,
+                        batterySaverActive = false,
                     )
+                    lookupAddress(context.location)
                 }
                 .onFailure { error ->
                     _contextState.update {
@@ -108,6 +147,82 @@ class AppViewModel(
                         )
                     }
                 }
+        }
+    }
+
+    /**
+     * External service feature: reverse geocoding with Nominatim. Offline, or when the lookup
+     * fails, the last known address is kept and an explanatory message is shown instead.
+     */
+    private fun lookupAddress(location: LocationData?) {
+        val provider = addressProvider ?: return
+        if (location == null) return
+        if (!_deviceStatus.value.isOnline) {
+            _contextState.update { it.copy(addressError = ADDRESS_OFFLINE_MESSAGE) }
+            return
+        }
+        viewModelScope.launch {
+            val address = runCatching { provider.addressFor(location) }.getOrNull()
+            _contextState.update {
+                if (address != null) it.copy(address = address, addressError = null)
+                else it.copy(addressError = ADDRESS_UNAVAILABLE_MESSAGE)
+            }
+        }
+    }
+
+    /**
+     * Context-aware feature: receives connectivity/battery changes. When the phone comes back
+     * online, the network-dependent data (catalogue, Smart Picks, context and address) is
+     * refreshed automatically instead of waiting for the user.
+     */
+    fun onDeviceStatusChanged(status: DeviceStatus) {
+        val previous = _deviceStatus.value
+        _deviceStatus.value = status
+        if (!previous.isOnline && status.isOnline) {
+            retryNetworkWork()
+        }
+    }
+
+    /** Manual "Retry" from the offline banner, also used after reconnection. */
+    fun retryNetworkWork() {
+        refreshQuestCatalog()
+        refreshRecommendations()
+        refreshContext(force = true)
+    }
+
+    /** Sensor feature: availability of the ambient light sensor on this device. */
+    fun setLightSensorAvailable(available: Boolean) {
+        _uiState.update {
+            it.copy(
+                lightSensorAvailable = available,
+                autoThemeEnabled = it.autoThemeEnabled && available,
+            )
+        }
+    }
+
+    /** Sensor feature: new dark/light decision from the ambient light sensor. */
+    fun onAmbientLightChanged(isDark: Boolean) {
+        lastAmbientDark = isDark
+        if (_uiState.value.autoThemeEnabled) {
+            _uiState.update { it.copy(darkMode = isDark) }
+        }
+    }
+
+    /** Sensor feature: latest ambient light reading, rounded so the UI only updates on real changes. */
+    fun onAmbientLux(lux: Float) {
+        val rounded = kotlin.math.round(lux)
+        if (_uiState.value.ambientLux != rounded) _uiState.update { it.copy(ambientLux = rounded) }
+    }
+
+    /** Sensor feature: turns the automatic (light sensor) theme on or off. */
+    fun toggleAutoTheme() {
+        _uiState.update { state ->
+            if (!state.lightSensorAvailable) return@update state
+            val enabled = !state.autoThemeEnabled
+            state.copy(
+                autoThemeEnabled = enabled,
+                darkMode = if (enabled) lastAmbientDark ?: state.darkMode else state.darkMode,
+            )
         }
     }
 
@@ -311,12 +426,49 @@ class AppViewModel(
     }
 
     fun toggleDarkMode() {
-        _uiState.update { it.copy(darkMode = !it.darkMode) }
+        // A manual choice overrides the automatic (light sensor) theme.
+        _uiState.update { it.copy(darkMode = !it.darkMode, autoThemeEnabled = false) }
     }
 
     fun setAvailableTime(minutes: Int) {
-        _uiState.update { it.copy(availableTime = minutes, remoteRecommendationIds = emptyList()) }
+        val choice = TimeChoice(timeOfDayFromHour(ZonedDateTime.now().hour), minutes)
+        _uiState.update {
+            it.copy(
+                availableTime = minutes,
+                remoteRecommendationIds = emptyList(),
+                timeChoices = (it.timeChoices + choice).takeLast(SmartTimeAdvisor.HISTORY_SIZE),
+                smartTimeHint = null,
+            )
+        }
         refreshRecommendations()
+    }
+
+    /**
+     * Smart feature: when Explorer opens, preselect the time the user usually picks in this part
+     * of the day. Applied at most once per part of the day per session so it never fights a
+     * choice the user just made.
+     */
+    fun applySmartAvailableTime() {
+        val state = _uiState.value
+        val timeOfDay = timeOfDayFromHour(ZonedDateTime.now().hour)
+        if (state.smartTimeAppliedFor == timeOfDay) return
+        val preferred = SmartTimeAdvisor.preferredMinutes(state.timeChoices, timeOfDay) ?: return
+        _uiState.update { it.copy(smartTimeAppliedFor = timeOfDay) }
+        if (preferred == state.availableTime) return
+
+        val label = if (preferred == 60) "1 hr+" else "$preferred min"
+        _uiState.update {
+            it.copy(
+                availableTime = preferred,
+                remoteRecommendationIds = emptyList(),
+                smartTimeHint = "⚡ Smart pick: you usually have $label in the ${timeOfDay.label().lowercase()}",
+            )
+        }
+        refreshRecommendations()
+        trackEvent("smart_time_applied", metadata = buildJsonObject {
+            put("minutes", preferred)
+            put("time_of_day", timeOfDay.name.lowercase())
+        })
     }
 
     fun setCategory(category: String) {
@@ -345,6 +497,54 @@ class AppViewModel(
             )
         }
         refreshRecommendations()
+    }
+
+    private fun recordDifficultyOutcome(outcome: DifficultyOutcome) {
+        val before = difficultySuggestion()
+        _uiState.update {
+            it.copy(difficultyOutcomes = (it.difficultyOutcomes + outcome).takeLast(SmartDifficultyAdvisor.HISTORY_SIZE))
+        }
+        // BQ13 instrumentation: a new adaptive suggestion was shown to the user.
+        val after = difficultySuggestion() ?: return
+        if (after.suggested != before?.suggested) {
+            trackDifficultyEvent("smart_difficulty_suggested", after)
+        }
+    }
+
+    /** BQ13 (Adaptive Quest Optimization): events to compare acceptance/completion with and without adaptation. */
+    private fun trackDifficultyEvent(eventType: String, suggestion: DifficultySuggestion) {
+        val streaks = difficultyStreaks()
+        trackEvent(eventType, metadata = buildJsonObject {
+            put("bq", "BQ13")
+            put("from_difficulty", suggestion.current.name.lowercase())
+            put("to_difficulty", suggestion.suggested.name.lowercase())
+            put("abandon_streak", streaks.abandons)
+            put("completion_streak", streaks.completions)
+        })
+    }
+
+    /** Smart feature: current difficulty suggestion, or null when there is nothing to suggest. */
+    fun difficultySuggestion(): DifficultySuggestion? {
+        val state = _uiState.value
+        if (state.difficultySuggestionDismissedAt == state.difficultyOutcomes.size) return null
+        return SmartDifficultyAdvisor.suggest(state.difficultyOutcomes, state.preferences.difficulty)
+    }
+
+    /** Smart feature: current streaks at the preferred difficulty (shown in Profile). */
+    fun difficultyStreaks(): DifficultyStreaks {
+        val state = _uiState.value
+        return SmartDifficultyAdvisor.streaks(state.difficultyOutcomes, state.preferences.difficulty)
+    }
+
+    fun acceptDifficultySuggestion() {
+        val suggestion = difficultySuggestion() ?: return
+        trackDifficultyEvent("smart_difficulty_accepted", suggestion)
+        setDifficulty(suggestion.suggested)
+    }
+
+    fun dismissDifficultySuggestion() {
+        difficultySuggestion()?.let { trackDifficultyEvent("smart_difficulty_dismissed", it) }
+        _uiState.update { it.copy(difficultySuggestionDismissedAt = it.difficultyOutcomes.size) }
     }
 
     fun setDifficulty(difficulty: QuestDifficulty) {
@@ -460,6 +660,7 @@ class AppViewModel(
         }
         if (completed) {
             trackEvent("quest_completed", quest)
+            recordDifficultyOutcome(DifficultyOutcome(quest.difficulty, completed = true))
         }
 
         val attemptId = _uiState.value.attemptIdByQuest[questId] ?: return
@@ -684,6 +885,7 @@ class AppViewModel(
         if (current.abandoned || current.completedSteps.size >= quest.steps.size) return
         val evidence = buildBq6AbandonmentEvidence(reason, quest, current)
 
+        recordDifficultyOutcome(DifficultyOutcome(quest.difficulty, completed = false, reason = reason))
         _uiState.update {
             it.copy(
                 progressByQuest = it.progressByQuest + (
@@ -908,5 +1110,12 @@ class AppViewModel(
                 screen = AppScreen.QuestDetail,
             )
         }
+    }
+
+    private companion object {
+        /** Low battery: reuse the last context for up to 15 minutes before reading GPS again. */
+        const val BATTERY_SAVER_REUSE_MILLIS = 15 * 60 * 1000L
+        const val ADDRESS_OFFLINE_MESSAGE = "Address unavailable offline"
+        const val ADDRESS_UNAVAILABLE_MESSAGE = "Address unavailable right now"
     }
 }

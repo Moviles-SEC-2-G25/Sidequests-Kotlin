@@ -22,7 +22,11 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.LinearProgressIndicator
@@ -42,6 +46,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -57,6 +63,8 @@ import com.sidequests.app.sensor.camera.CameraPhotoProofService
 import com.sidequests.app.ui.theme.DiscoveryTeal
 import com.sidequests.app.ui.theme.ExplorerIndigo
 import com.sidequests.app.ui.theme.QuestAmber
+import com.sidequests.app.domain.SmartDifficultyAdvisor
+import com.sidequests.app.ui.auth.PasswordChangeState
 import java.io.File
 
 @Composable
@@ -111,6 +119,12 @@ fun QuestDetailScreen(
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 QuestFact(if (quest.location == LocationMode.Gps) "📍" else "🏠", "Location", quest.distance, Modifier.weight(1f))
                 QuestFact("👥", "Vibe", quest.socialLevel.name, Modifier.weight(1f))
+            }
+        }
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                QuestFact("🎯", "Difficulty", quest.difficulty.name, Modifier.weight(1f))
+                Spacer(Modifier.weight(1f))
             }
         }
         item {
@@ -554,9 +568,28 @@ fun ProfileScreen(
     viewModel: AppViewModel,
     onSignOut: () -> Unit,
     modifier: Modifier = Modifier,
+    accountEmail: String? = null,
+    address: String? = null,
+    isOnline: Boolean = true,
+    passwordState: PasswordChangeState = PasswordChangeState(),
+    onChangePassword: (newPassword: String, confirmation: String) -> Unit = { _, _ -> },
+    onClearPasswordFeedback: () -> Unit = {},
 ) {
     val completed = state.progressByQuest.values.count { it.completedSteps.size >= 4 }
     val interests = state.preferences.interests
+    var showPasswordDialog by rememberSaveable { mutableStateOf(false) }
+
+    if (showPasswordDialog) {
+        ChangePasswordDialog(
+            state = passwordState,
+            isOnline = isOnline,
+            onSubmit = onChangePassword,
+            onDismiss = {
+                showPasswordDialog = false
+                onClearPasswordFeedback()
+            },
+        )
+    }
 
     LazyColumn(
         modifier = modifier.fillMaxSize().background(MaterialTheme.colorScheme.background),
@@ -572,7 +605,7 @@ fun ProfileScreen(
                 Spacer(Modifier.width(14.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text("Explorer", style = MaterialTheme.typography.titleLarge)
-                    Text("📍 Bogotá DC", color = MaterialTheme.colorScheme.onSurface.copy(alpha = .55f))
+                    Text("📍 " + (address ?: "Location not available yet"), color = MaterialTheme.colorScheme.onSurface.copy(alpha = .55f))
                 }
                 Text(
                     if (state.darkMode) "☀️" else "🌙",
@@ -580,6 +613,39 @@ fun ProfileScreen(
                     fontSize = 18.sp,
                     textAlign = TextAlign.Center,
                 )
+            }
+        }
+        item {
+            Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
+                Text("THEME", fontSize = 10.sp, fontWeight = FontWeight.Black, color = MaterialTheme.colorScheme.onSurface.copy(alpha = .5f))
+                if (state.lightSensorAvailable) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        ChoiceChip(
+                            text = "Auto (light sensor)",
+                            selected = state.autoThemeEnabled,
+                            onClick = viewModel::toggleAutoTheme,
+                            emoji = "💡",
+                        )
+                    }
+                    Text(
+                        "Ambient light: " + (state.ambientLux?.let { "${it.toInt()} lux" } ?: "waiting for sensor…") +
+                            " (dark below 15, light above 40)",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = .7f),
+                    )
+                    Text(
+                        if (state.autoThemeEnabled) "Dark mode follows the ambient light around you." else "Tap the moon/sun to choose the theme manually.",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = .55f),
+                    )
+                } else {
+                    Text(
+                        "This device has no ambient light sensor, so the theme is manual.",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = .55f),
+                    )
+                }
             }
         }
         item {
@@ -615,6 +681,22 @@ fun ProfileScreen(
                         )
                     }
                 }
+                val progress = viewModel.difficultyStreaks()
+                Text(
+                    "🧠 Smart difficulty (${state.preferences.difficulty.name} level): " +
+                        "${progress.abandons}/${SmartDifficultyAdvisor.EASIER_AFTER_ABANDONS} left as too hard/long · " +
+                        "${progress.completions}/${SmartDifficultyAdvisor.HARDER_AFTER_COMPLETIONS} completed in a row",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = .6f),
+                )
+                val lastOutcome = state.difficultyOutcomes.lastOrNull()
+                Text(
+                    "Recorded attempts: ${state.difficultyOutcomes.size}" + (lastOutcome?.let { o ->
+                        " · last: ${o.difficulty.name} " + if (o.completed) "completed" else "left (${o.reason?.label ?: "no reason"})"
+                    } ?: ""),
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = .5f),
+                )
             }
         }
         item {
@@ -635,8 +717,16 @@ fun ProfileScreen(
         item {
             Text("ACCOUNT", fontSize = 10.sp, fontWeight = FontWeight.Black, color = MaterialTheme.colorScheme.onSurface.copy(alpha = .5f))
             Text(
-                "Authenticated user",
+                accountEmail ?: "Authenticated user",
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = .65f),
+            )
+            Spacer(Modifier.height(8.dp))
+            PrimaryButton(
+                text = "Change password",
+                onClick = {
+                    onClearPasswordFeedback()
+                    showPasswordDialog = true
+                },
             )
         }
         item {
@@ -670,4 +760,68 @@ fun ProfileScreen(
             )
         }
     }
+}
+
+/** Authentication feature: change the password of the signed-in account. */
+@Composable
+private fun ChangePasswordDialog(
+    state: PasswordChangeState,
+    isOnline: Boolean,
+    onSubmit: (newPassword: String, confirmation: String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var newPassword by remember { mutableStateOf("") }
+    var confirmation by remember { mutableStateOf("") }
+    val done = state.message != null
+
+    AlertDialog(
+        onDismissRequest = { if (!state.isBusy) onDismiss() },
+        title = { Text("Change password") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                if (!isOnline) {
+                    Text(
+                        "You're offline. You can type the new password, but it can only be saved once you're connected.",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+                OutlinedTextField(
+                    value = newPassword,
+                    onValueChange = { newPassword = it },
+                    label = { Text("New password") },
+                    singleLine = true,
+                    enabled = !state.isBusy && !done,
+                    visualTransformation = PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                )
+                OutlinedTextField(
+                    value = confirmation,
+                    onValueChange = { confirmation = it },
+                    label = { Text("Confirm password") },
+                    singleLine = true,
+                    enabled = !state.isBusy && !done,
+                    visualTransformation = PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                )
+                state.error?.let { Text(it, color = MaterialTheme.colorScheme.error, fontSize = 12.sp) }
+                state.message?.let { Text(it, color = DiscoveryTeal, fontSize = 12.sp, fontWeight = FontWeight.Bold) }
+            }
+        },
+        confirmButton = {
+            if (done) {
+                TextButton(onClick = onDismiss) { Text("Done") }
+            } else {
+                TextButton(
+                    onClick = { onSubmit(newPassword, confirmation) },
+                    enabled = !state.isBusy,
+                ) { Text(if (state.isBusy) "Saving…" else "Save") }
+            }
+        },
+        dismissButton = {
+            if (!done) {
+                TextButton(onClick = onDismiss, enabled = !state.isBusy) { Text("Cancel") }
+            }
+        },
+    )
 }

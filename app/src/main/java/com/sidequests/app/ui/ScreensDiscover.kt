@@ -232,6 +232,12 @@ fun ExplorerScreen(
     modifier: Modifier = Modifier,
 ) {
     val recommendations = viewModel.recommendations()
+    // Re-evaluated on every recomposition triggered by a new state.
+    val difficultySuggestion = viewModel.difficultySuggestion()
+
+    androidx.compose.runtime.LaunchedEffect(Unit) {
+        viewModel.applySmartAvailableTime()
+    }
     val filtered = viewModel.allQuests().filter {
         (state.selectedCategory == "All" || it.category == state.selectedCategory) &&
             it.id !in state.skippedQuestIds
@@ -270,6 +276,10 @@ fun ExplorerScreen(
                         )
                     }
                 }
+                state.smartTimeHint?.let { hint ->
+                    Spacer(Modifier.height(6.dp))
+                    Text(hint, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = QuestAmber)
+                }
                 Spacer(Modifier.height(10.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     ChoiceChip("🌐 All", state.preferences.locationMode == "all", { viewModel.setLocationMode("all") })
@@ -284,8 +294,36 @@ fun ExplorerScreen(
                 contextState = contextState,
                 locationMode = state.preferences.locationMode,
                 onRequestLocation = onRequestLocation,
-                onRefresh = viewModel::refreshContext,
+                onRefresh = { viewModel.refreshContext(force = true) },
             )
+        }
+
+        difficultySuggestion?.let { suggestion ->
+            item {
+                Card(
+                    modifier = Modifier.padding(horizontal = 20.dp).fillMaxWidth(),
+                    shape = RoundedCornerShape(20.dp),
+                    colors = CardDefaults.cardColors(containerColor = QuestAmber.copy(alpha = .16f)),
+                ) {
+                    Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("SMART DIFFICULTY", fontSize = 10.sp, fontWeight = FontWeight.Black, color = QuestAmber, letterSpacing = 1.1.sp)
+                        Text(suggestion.explanation, fontWeight = FontWeight.Bold)
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            ChoiceChip(
+                                text = "Switch to ${suggestion.suggested.name}",
+                                selected = true,
+                                onClick = viewModel::acceptDifficultySuggestion,
+                                selectedColor = QuestAmber,
+                            )
+                            ChoiceChip(
+                                text = "Keep ${suggestion.current.name}",
+                                selected = false,
+                                onClick = viewModel::dismissDifficultySuggestion,
+                            )
+                        }
+                    }
+                }
+            }
         }
 
         item {
@@ -382,7 +420,11 @@ private fun ContextAwareCard(
                         text = if (contextState.loading) "Updating context…" else "${contextState.context.timeOfDay.label()} • ${contextState.context.weather?.condition?.label() ?: "Weather unavailable"}",
                         fontWeight = FontWeight.Bold,
                     )
-                    val locationText = if (contextState.context.location != null) "📍 Location available" else "📍 Location not available"
+                    val locationText = when {
+                        contextState.address != null -> "📍 Near: ${contextState.address}"
+                        contextState.context.location != null -> "📍 " + (contextState.addressError ?: "Location available")
+                        else -> "📍 Location not available"
+                    }
                     Text(locationText, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = .62f))
                 }
                 Text(
@@ -423,6 +465,13 @@ private fun ContextAwareCard(
                     color = DiscoveryTeal,
                     fontWeight = FontWeight.Bold,
                     fontSize = 12.sp,
+                )
+            }
+            if (contextState.batterySaverActive) {
+                Text(
+                    "🔋 Battery saver: reusing the last context (refreshes every 15 min). Tap Refresh to force it.",
+                    fontSize = 10.sp,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = .6f),
                 )
             }
             contextState.error?.let {
