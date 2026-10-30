@@ -1,6 +1,7 @@
 package com.sidequests.app.ui
 
 import androidx.lifecycle.ViewModelStore
+import androidx.lifecycle.viewModelScope
 import com.sidequests.app.context.*
 import com.sidequests.app.data.InMemorySidequestsRepository
 import com.sidequests.app.data.local.LexLocalStore
@@ -9,8 +10,10 @@ import com.sidequests.app.model.AbandonmentReason
 import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.test.*
 import org.junit.After
 import org.junit.Assert.*
@@ -24,11 +27,21 @@ class Sprint3LocalFlowTest {
     @get:Rule val folder = TemporaryFolder()
     private val dispatcher = StandardTestDispatcher()
     private val models = ViewModelStore()
+    private val viewModelJobs = mutableListOf<Job>()
     private val scheduled = Channel<Unit>(Channel.UNLIMITED)
     private var count = 0
     private fun store() = LexLocalStore(File(folder.root, "outbox.json"))
     @Before fun setup() { Dispatchers.setMain(dispatcher) }
-    @After fun cleanup() { models.clear(); dispatcher.scheduler.runCurrent(); Dispatchers.resetMain() }
+    @After fun cleanup() {
+        try {
+            runTest(dispatcher) {
+                models.clear()
+                viewModelJobs.joinAll()
+            }
+        } finally {
+            Dispatchers.resetMain()
+        }
+    }
 
     private fun vm(): AppViewModel {
         val location = object : LocationProvider { override suspend fun getCurrentLocation(): LocationData? = null }
@@ -38,7 +51,10 @@ class Sprint3LocalFlowTest {
             analyticsRepository = null, recommendationRepository = null, photoProofRepository = null,
             localStore = store(), scheduleLocalSync = { scheduled.trySend(Unit) },
             localIoDispatcher = dispatcher,
-        ).also { models.put("vm-${count++}", it) }
+        ).also {
+            models.put("vm-${count++}", it)
+            viewModelJobs += requireNotNull(it.viewModelScope.coroutineContext[Job])
+        }
     }
 
     @Test fun `real view model actions produce linked first recommendation events`() = runTest {
