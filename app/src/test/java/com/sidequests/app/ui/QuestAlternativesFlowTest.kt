@@ -90,6 +90,19 @@ class QuestAlternativesFlowTest {
         assertEquals(1, analytics.events.count { it.type == "quest_alternative_selected" })
     }
 
+    @Test fun `offline acceptance cannot create an unconfirmed attempt or move to quest`() = runTest {
+        val vm = viewModel()
+        vm.onDeviceStatusChanged(DeviceStatus(isOnline = false))
+        val before = vm.uiState.value.screen
+        vm.acceptQuest("botanical-garden")
+        advanceUntilIdle()
+        assertEquals(before, vm.uiState.value.screen)
+        assertTrue(vm.uiState.value.attemptIdByQuest.isEmpty())
+        assertTrue(progress.accepted.isEmpty())
+        assertTrue(vm.uiState.value.progressSyncError.orEmpty().contains("internet"))
+        assertFalse(analytics.events.any { it.type == "quest_accepted" })
+    }
+
     @Test fun `failed remote acceptance is not counted as a successful analytics event`() = runTest {
         progress.failNextAccept = true
         val vm = viewModel()

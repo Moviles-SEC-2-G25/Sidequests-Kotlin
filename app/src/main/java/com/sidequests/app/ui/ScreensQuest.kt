@@ -35,6 +35,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -77,6 +78,8 @@ fun QuestDetailScreen(
     viewModel: AppViewModel,
     modifier: Modifier = Modifier,
 ) {
+    val deviceStatus by viewModel.deviceStatus.collectAsStateWithLifecycle()
+    val appState by viewModel.uiState.collectAsStateWithLifecycle()
     LazyColumn(
         modifier = modifier.fillMaxSize().background(MaterialTheme.colorScheme.background),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 20.dp, vertical = 18.dp),
@@ -150,10 +153,21 @@ fun QuestDetailScreen(
             }
         }
         item {
-            PrimaryButton(
-                text = if (quest.isGroup) "Join group quest →" else "Accept this quest →",
-                onClick = { viewModel.acceptQuest(quest.id) },
-            )
+            if (!deviceStatus.isOnline) {
+                Text(
+                    "You're offline. You can browse this quest, but accepting it requires internet.",
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            } else {
+                PrimaryButton(
+                    text = if (quest.isGroup) "Join group quest →" else "Accept this quest →",
+                    onClick = { viewModel.acceptQuest(quest.id) },
+                )
+                appState.progressSyncError?.let { error ->
+                    Text(error, color = MaterialTheme.colorScheme.error)
+                }
+            }
         }
     }
 }
