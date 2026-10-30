@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import com.sidequests.app.data.LocalQuestCatalogueStore
 import com.sidequests.app.data.SupabaseSidequestsRepository
 import com.sidequests.app.data.InMemorySidequestsRepository
+import com.sidequests.app.data.local.LexSyncWorker
 import com.sidequests.app.data.remote.SupabaseProvider
 import java.io.File
 import androidx.lifecycle.ViewModelProvider
@@ -32,6 +33,9 @@ class AppViewModelFactory(
             } else InMemorySidequestsRepository(),
             alternativeContextReader = { alternativeContextOverride ?: contextManager.readContext() },
             alternativeContextSimulated = alternativeContextOverride != null,
+            localStore = LexSyncWorker.store(applicationContext),
+            scheduleLocalSync = { userId -> LexSyncWorker.schedule(applicationContext, userId) },
+            retryLocalSync = { userId -> LexSyncWorker.schedule(applicationContext, userId, retryNow = true) },
         ) as T
     }
 }

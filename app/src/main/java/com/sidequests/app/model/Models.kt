@@ -52,6 +52,7 @@ data class QuestProgress(
     fun hasPhotoProof(stepIndex: Int): Boolean = stepIndex in localPhotoProofByStep
 }
 
+@kotlinx.serialization.Serializable
 data class UserPreferences(
     val interests: Set<String> = emptySet(),
     val difficulty: QuestDifficulty = QuestDifficulty.Easy,
@@ -80,6 +81,10 @@ enum class AppScreen {
 }
 
 data class SidequestsUiState(
+    val accountUserId: String? = null,
+    val localStateError: String? = null,
+    val onboardingSaving: Boolean = false,
+    val pendingPhotoUploads: Int = 0,
     val screen: AppScreen = AppScreen.Onboarding,
     val onboardingStep: Int = 0,
     val darkMode: Boolean = false,

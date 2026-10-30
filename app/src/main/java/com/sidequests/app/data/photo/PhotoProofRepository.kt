@@ -8,6 +8,7 @@ import io.ktor.http.ContentType
 import java.io.File
 import java.util.UUID
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -24,12 +25,17 @@ private data class PhotoProofInsertDto(
     @SerialName("storage_path") val storagePath: String,
 )
 
+@Serializable
+private data class ExistingPhotoProof(@SerialName("storage_path") val storagePath: String)
+
 interface PhotoProofRepository {
     suspend fun upload(
         attemptId: String,
         questId: String,
         stepIndex: Int,
         photoFile: File,
+        proofId: String = UUID.randomUUID().toString(),
+        expectedUserId: String? = null,
     ): Result<PhotoProofUpload>
 }
 
@@ -42,6 +48,8 @@ class SupabasePhotoProofRepository(
         questId: String,
         stepIndex: Int,
         photoFile: File,
+        proofId: String,
+        expectedUserId: String?,
     ): Result<PhotoProofUpload> = runCatching {
         withContext(Dispatchers.IO) {
             check(photoFile.isFile && photoFile.length() > 0) {
@@ -51,18 +59,35 @@ class SupabasePhotoProofRepository(
 
             val userId = client.auth.currentUserOrNull()?.id
                 ?: error("No authenticated Supabase user is available.")
+            check(expectedUserId == null || expectedUserId == userId) { "Sign in to the account that captured this photo." }
             val safeQuestId = safePathSegment(questId)
             val storagePath = listOf(
                 userId,
                 attemptId,
                 safeQuestId,
-                "step-${stepIndex + 1}-${UUID.randomUUID()}.jpg",
+                "step-${stepIndex + 1}-$proofId.jpg",
             ).joinToString("/")
 
             val bucket = client.storage.from(bucketName)
-            bucket.upload(storagePath, photoFile.readBytes()) {
-                upsert = false
-                contentType = ContentType.Image.JPEG
+            suspend fun isRegistered(): Boolean = client.from("quest_photo_proofs").select {
+                filter { eq("storage_path", storagePath); eq("attempt_id", attemptId); eq("step_order", stepIndex) }
+            }.decodeList<ExistingPhotoProof>().isNotEmpty()
+
+            if (isRegistered()) return@withContext PhotoProofUpload(storagePath, photoFile.length())
+            val bytes = photoFile.readBytes()
+            try {
+                bucket.upload(storagePath, bytes) {
+                    upsert = false
+                    contentType = ContentType.Image.JPEG
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (uploadError: Exception) {
+                // A retry may find a JPEG whose upload acknowledgement was lost.
+                val sameFile = try { bucket.downloadAuthenticated(storagePath).contentEquals(bytes) }
+                    catch (cancelled: CancellationException) { throw cancelled }
+                    catch (_: Exception) { false }
+                if (!sameFile) throw uploadError
             }
 
             try {
@@ -74,12 +99,9 @@ class SupabasePhotoProofRepository(
                     )
                 )
             } catch (registrationError: Exception) {
-                try {
-                    bucket.delete(storagePath)
-                } catch (cleanupError: Exception) {
-                    registrationError.addSuppressed(cleanupError)
-                }
-                throw registrationError
+                if (registrationError is CancellationException) throw registrationError
+                // Keep the same object for retry. A lost insert acknowledgement is also safe.
+                if (!isRegistered()) throw registrationError
             }
 
             PhotoProofUpload(
