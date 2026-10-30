@@ -19,6 +19,7 @@ import com.sidequests.app.context.DeviceStatus
 import com.sidequests.app.context.LocationData
 import com.sidequests.app.context.UserContext
 import com.sidequests.app.context.timeOfDayFromHour
+import com.sidequests.app.data.QuestCatalogueOrigin
 import com.sidequests.app.data.InMemorySidequestsRepository
 import com.sidequests.app.data.SidequestsRepository
 import com.sidequests.app.data.SupabaseSidequestsRepository
@@ -26,11 +27,19 @@ import com.sidequests.app.data.remote.SupabaseProvider
 import com.sidequests.app.data.progress.QuestProgressRepository
 import com.sidequests.app.data.progress.SupabaseQuestProgressRepository
 import com.sidequests.app.data.analytics.AnalyticsRepository
+import com.sidequests.app.data.analytics.Bq9RecommendationOutbox
 import com.sidequests.app.data.analytics.buildRecommendationContextMetadata
 import com.sidequests.app.data.analytics.buildBq6AbandonmentEvidence
 import com.sidequests.app.data.analytics.SupabaseAnalyticsRepository
 import com.sidequests.app.data.photo.PhotoProofRepository
 import com.sidequests.app.data.photo.SupabasePhotoProofRepository
+import com.sidequests.app.data.analytics.OnboardingRecorder
+import com.sidequests.app.data.local.LexLocalStore
+import com.sidequests.app.data.local.LexLocalState
+import com.sidequests.app.data.local.OnboardingJourney
+import com.sidequests.app.data.local.StoredPhotoProof
+import com.sidequests.app.data.local.PhotoQuestSnapshot
+import com.sidequests.app.data.photo.photoEvent
 import com.sidequests.app.data.recommendation.RecommendationRepository
 import com.sidequests.app.data.recommendation.SupabaseRecommendationRepository
 import com.sidequests.app.model.AppScreen
@@ -48,6 +57,10 @@ import com.sidequests.app.domain.QuestStepCompletionPolicy
 import com.sidequests.app.domain.QuestAlternativeRecommender
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -83,6 +96,10 @@ class AppViewModel(
         } else null,
     private val alternativeContextReader: suspend () -> UserContext = { contextManager.readContext() },
     private val alternativeContextSimulated: Boolean = false,
+    private val localStore: LexLocalStore? = null,
+    private val scheduleLocalSync: (String) -> Unit = {},
+    private val localIoDispatcher: kotlinx.coroutines.CoroutineDispatcher = Dispatchers.IO,
+    private val retryLocalSync: (String) -> Unit = scheduleLocalSync,
     private val addressProvider: AddressProvider? = null,
 ) : ViewModel() {
 
@@ -90,6 +107,12 @@ class AppViewModel(
     private val recommendationEngine = ContextAwareRecommendationEngine()
     private val alternativeRecommender = QuestAlternativeRecommender()
     private var alternativeJob: Job? = null
+    private var openedFromSmartPicksId: String? = null
+    private var attachedUserId: String? = null
+    private var accountGeneration = 0
+    private var photoObserver: Job? = null
+    private val journeyMutex = Mutex()
+    private val photoMutex = Mutex()
     private val _uiState = MutableStateFlow(SidequestsUiState())
     private val _contextState = MutableStateFlow(ContextUiState())
     val uiState: StateFlow<SidequestsUiState> = _uiState.asStateFlow()
@@ -108,6 +131,151 @@ class AppViewModel(
     init {
         refreshContext()
         refreshQuestCatalog()
+    }
+
+    /**
+     * New account state. Device-level settings (theme, light sensor) are kept, because they belong
+     * to the phone, not to the signed-in user.
+     */
+    private fun freshAccountState(): SidequestsUiState {
+        val current = _uiState.value
+        return SidequestsUiState(
+            darkMode = current.darkMode,
+            autoThemeEnabled = current.autoThemeEnabled,
+            lightSensorAvailable = current.lightSensorAvailable,
+            ambientLux = current.ambientLux,
+        )
+    }
+
+    fun detachAccount() {
+        attachedUserId = null
+        accountGeneration += 1
+        photoObserver?.cancel()
+        alternativeJob?.cancel()
+        _uiState.value = freshAccountState()
+    }
+
+    fun attachAccount(userId: String) {
+        if (attachedUserId == userId && _uiState.value.accountUserId == userId && _uiState.value.localStateError == null) return
+        attachedUserId = userId
+        accountGeneration += 1
+        photoObserver?.cancel()
+        _uiState.value = freshAccountState()
+        val store = localStore ?: run {
+            _uiState.update { it.copy(accountUserId = userId) }
+            return
+        }
+        viewModelScope.launch {
+            try {
+                val (journey, saved) = withContext(localIoDispatcher) {
+                    OnboardingRecorder(store, userId).startOrResume() to store.read()
+                }
+                if (attachedUserId != userId) return@launch
+                _uiState.update { it.copy(
+                    accountUserId = userId,
+                    preferences = journey.preferences,
+                    availableTime = journey.preferences.typicalTime,
+                    onboardingStep = journey.step,
+                    screen = if (journey.status == "active") AppScreen.Onboarding else AppScreen.Explorer,
+                ) }
+                val open = saved.photoQuests.values.filter { it.userId == userId && !it.closed }
+                if (open.isNotEmpty()) {
+                    _uiState.update { state -> state.copy(
+                        attemptIdByQuest = open.associate { it.questId to it.attemptId },
+                        progressByQuest = open.associate { it.questId to QuestProgress(currentStep = it.currentStep, completedSteps = it.completedSteps) },
+                        activeQuestId = open.last().questId,
+                    ) }
+                }
+                applyStoredPhotos(saved, userId)
+                scheduleLocalSync(userId)
+                refreshQuestCatalog()
+                refreshRecommendations()
+                photoObserver = viewModelScope.launch {
+                    store.changes.collect {
+                        val latest = withContext(localIoDispatcher) { store.read() }
+                        if (attachedUserId == userId) applyStoredPhotos(latest, userId)
+                    }
+                }
+            } catch (cancelled: CancellationException) { throw cancelled }
+              catch (_: Exception) {
+                if (attachedUserId == userId) _uiState.update { it.copy(accountUserId = userId, localStateError = "Could not read your saved setup and photos. Try again.") }
+            }
+        }
+    }
+
+    private fun applyStoredPhotos(saved: LexLocalState, userId: String) {
+        val photos = saved.photos.filter { it.userId == userId }
+        _uiState.update { state ->
+            var progress = state.progressByQuest
+            photos.groupBy { it.questId to it.stepIndex }.forEach { (key, _) ->
+                val entry = photos.lastOrNull { it.questId == key.first && it.stepIndex == key.second && it.attemptId == state.attemptIdByQuest[key.first] }
+                if (entry != null) {
+                    val old = progress[entry.questId] ?: QuestProgress()
+                    progress = progress + (entry.questId to old.copy(
+                        localPhotoProofByStep = if (entry.status != "missing") old.localPhotoProofByStep + (entry.stepIndex to entry.localPath) else old.localPhotoProofByStep - entry.stepIndex,
+                        uploadedPhotoProofByStep = if (entry.status == "uploaded" && entry.storagePath != null) old.uploadedPhotoProofByStep + (entry.stepIndex to entry.storagePath) else old.uploadedPhotoProofByStep - entry.stepIndex,
+                        photoProofUploadingSteps = if (entry.status == "uploading") old.photoProofUploadingSteps + entry.stepIndex else old.photoProofUploadingSteps - entry.stepIndex,
+                        photoProofErrorByStep = if (entry.error != null) old.photoProofErrorByStep + (entry.stepIndex to entry.error) else old.photoProofErrorByStep - entry.stepIndex,
+                    ))
+                }
+            }
+            state.copy(progressByQuest = progress, pendingPhotoUploads = photos.count { it.status in setOf("pending", "uploading") })
+        }
+    }
+
+    fun retryPendingPhotoUploads() { attachedUserId?.let(retryLocalSync) }
+
+    private fun updateJourney(action: (OnboardingRecorder) -> OnboardingJourney, navigate: Boolean = false, schedule: Boolean = true) {
+        val store = localStore ?: return
+        val userId = attachedUserId ?: return
+        viewModelScope.launch {
+            journeyMutex.withLock {
+                try {
+                    val journey = withContext(localIoDispatcher) { action(OnboardingRecorder(store, userId)) }
+                    if (attachedUserId == userId && navigate) {
+                        _uiState.update { it.copy(
+                            onboardingStep = journey.step,
+                            screen = if (journey.status == "active") AppScreen.Onboarding else AppScreen.Explorer,
+                            onboardingSaving = false,
+                        ) }
+                        if (journey.status != "active") refreshRecommendations()
+                    }
+                    if (schedule) scheduleLocalSync(userId)
+                } catch (cancelled: CancellationException) { throw cancelled }
+                  catch (_: Exception) {
+                    _uiState.update { it.copy(onboardingSaving = false, localStateError = "Your setup could not be saved. Please try again.") }
+                }
+            }
+        }
+    }
+
+    fun firstOnboardingRecommendationVisible(questId: String) {
+        updateJourney({ it.firstRecommendationShown(questId) })
+    }
+
+    private fun persistSetupPreferences() {
+        if (_uiState.value.screen == AppScreen.Onboarding) {
+            val preferences = _uiState.value.preferences
+            updateJourney({ it.savePreferences(preferences) }, schedule = false)
+        }
+    }
+
+    private fun persistPhotoProgress(questId: String, attemptId: String, progress: QuestProgress, closed: Boolean = false) {
+        val store = localStore ?: return
+        val userId = attachedUserId ?: return
+        viewModelScope.launch {
+            try {
+                photoMutex.withLock {
+                    withContext(localIoDispatcher) {
+                        store.update { saved ->
+                            if (saved.photos.none { it.attemptId == attemptId && it.userId == userId }) saved
+                            else saved.copy(photoQuests = saved.photoQuests + (attemptId to PhotoQuestSnapshot(userId, questId, attemptId, progress.currentStep, progress.completedSteps, closed)))
+                        }
+                    }
+                }
+            } catch (cancelled: CancellationException) { throw cancelled }
+              catch (_: Exception) { _uiState.update { it.copy(localStateError = "Photo progress could not be saved on this device. Please try again.") } }
+        }
     }
 
     /**
@@ -286,7 +454,11 @@ class AppViewModel(
                     _uiState.update {
                         it.copy(
                             catalogLoading = false,
-                            catalogSource = "Supabase · $count quests",
+                            catalogSource = when (repository.catalogueOrigin()) {
+                                QuestCatalogueOrigin.Remote -> "Supabase · $count quests"
+                                QuestCatalogueOrigin.Saved -> "Saved catalogue · $count quests"
+                                QuestCatalogueOrigin.Sample -> "Sample catalogue · $count quests"
+                            },
                             catalogError = null,
                         )
                     }
@@ -296,7 +468,11 @@ class AppViewModel(
                     _uiState.update {
                         it.copy(
                             catalogLoading = false,
-                            catalogSource = "Local fallback",
+                            catalogSource = when (repository.catalogueOrigin()) {
+                                QuestCatalogueOrigin.Saved -> "Saved catalogue · offline"
+                                QuestCatalogueOrigin.Remote -> "Last loaded catalogue · offline"
+                                QuestCatalogueOrigin.Sample -> "Sample catalogue · offline"
+                            },
                             catalogError = throwable.message ?: "Remote catalogue unavailable.",
                         )
                     }
@@ -308,6 +484,7 @@ class AppViewModel(
         val remote = recommendationRepository ?: return
         val state = _uiState.value
         if (state.recommendationLoading) return
+        val generation = accountGeneration
 
         viewModelScope.launch {
             _uiState.update {
@@ -321,6 +498,7 @@ class AppViewModel(
                 limit = 3,
             )
                 .onSuccess { results ->
+                    if (generation != accountGeneration) return@onSuccess
                     val ids = results.map { it.questId }
                     _uiState.update {
                         it.copy(
@@ -346,6 +524,7 @@ class AppViewModel(
                     }
                 }
                 .onFailure { throwable ->
+                    if (generation != accountGeneration) return@onFailure
                     _uiState.update {
                         it.copy(
                             recommendationLoading = false,
@@ -359,13 +538,15 @@ class AppViewModel(
     }
     fun navigate(screen: AppScreen) {
         if (screen != AppScreen.QuestAlternatives) alternativeJob?.cancel()
+        if (screen != AppScreen.QuestDetail) openedFromSmartPicksId = null
         _uiState.update {
             it.copy(screen = screen, questAlternatives = if (screen == AppScreen.QuestAlternatives) it.questAlternatives else null)
         }
     }
 
-    fun openQuestDetail(questId: String) {
+    fun openQuestDetail(questId: String, fromSmartPicks: Boolean = false) {
         alternativeJob?.cancel()
+        openedFromSmartPicksId = if (fromSmartPicks) questId else null
         _uiState.update { it.copy(selectedQuestId = questId, screen = AppScreen.QuestDetail, questAlternatives = null) }
     }
 
@@ -379,6 +560,14 @@ class AppViewModel(
         } ?: false
         val existingAttemptId = currentState.attemptIdByQuest[questId]
         val createsNewAttempt = existingAttemptId == null || previousAttemptFinished
+        val fromRecommendation = isRecommendationAcceptance(
+            questId = questId,
+            openedFromSmartPicksId = openedFromSmartPicksId,
+            currentRemoteRecommendations = currentState.remoteRecommendationIds,
+            startsNewAttempt = createsNewAttempt,
+        )
+        val firstOnboardingRecommendationSource = openedFromSmartPicksId == questId
+        openedFromSmartPicksId = null
         val attemptId = if (createsNewAttempt) {
             UUID.randomUUID().toString()
         } else {
@@ -405,11 +594,21 @@ class AppViewModel(
         }
 
         if (createsNewAttempt) {
-            syncProgress("Saving accepted quest…") {
+            updateJourney({ it.firstRecommendationAccepted(questId, firstOnboardingRecommendationSource, attemptId) })
+            // BQ9 must reflect a quest acceptance confirmed by Supabase, not
+            // just an attempted tap while offline or after a server rejection.
+            syncProgress(
+                message = "Saving accepted quest…",
+                onSuccess = {
+                    trackEvent("quest_accepted", quest)
+                    if (fromRecommendation) {
+                        trackEvent("recommendation_accepted", quest)
+                    }
+                },
+            ) {
                 progressRepository?.acceptQuest(questId, attemptId)
                     ?: Result.success(Unit)
             }
-            trackEvent("quest_accepted", quest)
         }
     }
 
@@ -476,6 +675,13 @@ class AppViewModel(
     }
 
     fun nextOnboardingStep() {
+        if (localStore != null) {
+            if (_uiState.value.onboardingSaving) return
+            val preferences = _uiState.value.preferences
+            _uiState.update { it.copy(onboardingSaving = true) }
+            updateJourney({ it.completeStep(preferences) }, navigate = true)
+            return
+        }
         _uiState.update { state ->
             if (state.onboardingStep < 3) state.copy(onboardingStep = state.onboardingStep + 1)
             else state.copy(screen = AppScreen.Explorer)
@@ -483,6 +689,13 @@ class AppViewModel(
     }
 
     fun skipOnboarding() {
+        if (localStore != null) {
+            if (_uiState.value.onboardingSaving) return
+            val preferences = _uiState.value.preferences
+            _uiState.update { it.copy(onboardingSaving = true) }
+            updateJourney({ it.skip(preferences) }, navigate = true)
+            return
+        }
         _uiState.update { it.copy(preferences = UserPreferences(), screen = AppScreen.Explorer) }
     }
 
@@ -496,6 +709,7 @@ class AppViewModel(
                 remoteRecommendationIds = emptyList(),
             )
         }
+        persistSetupPreferences()
         refreshRecommendations()
     }
 
@@ -549,6 +763,7 @@ class AppViewModel(
 
     fun setDifficulty(difficulty: QuestDifficulty) {
         _uiState.update { it.copy(preferences = it.preferences.copy(difficulty = difficulty)) }
+        persistSetupPreferences()
     }
 
     fun setTypicalTime(minutes: Int) {
@@ -558,10 +773,12 @@ class AppViewModel(
                 preferences = state.preferences.copy(typicalTime = minutes),
             )
         }
+        persistSetupPreferences()
     }
 
     fun setBudget(amount: Int) {
         _uiState.update { it.copy(preferences = it.preferences.copy(budgetMax = amount)) }
+        persistSetupPreferences()
     }
 
     fun setSocialLevel(level: SocialLevel) {
@@ -571,6 +788,7 @@ class AppViewModel(
                 remoteRecommendationIds = emptyList(),
             )
         }
+        persistSetupPreferences()
         refreshRecommendations()
     }
 
@@ -664,6 +882,7 @@ class AppViewModel(
         }
 
         val attemptId = _uiState.value.attemptIdByQuest[questId] ?: return
+        persistPhotoProgress(questId, attemptId, _uiState.value.progressByQuest.getValue(questId), closed = completed)
         syncProgress(if (completed) "Saving completed quest…" else "Saving progress…") {
             progressRepository?.updateProgress(
                 attemptId = attemptId,
@@ -683,11 +902,36 @@ class AppViewModel(
         }
     }
 
-    fun markPhotoProofCaptured(stepIndex: Int, localPath: String) {
+    fun markPhotoProofCaptured(stepIndex: Int, localPath: String, expectedAttemptId: String? = null, expectedUserId: String? = null) {
         val state = _uiState.value
         val questId = state.activeQuestId
+        if (expectedAttemptId != null && state.attemptIdByQuest[questId] != expectedAttemptId) return
+        if (expectedUserId != null && attachedUserId != expectedUserId) return
         val quest = repository.questById(questId)
         val current = state.progressByQuest[questId] ?: QuestProgress()
+        if (localStore != null) {
+            val userId = attachedUserId ?: return
+            val attemptId = state.attemptIdByQuest[questId] ?: return
+            if (quest.steps.getOrNull(stepIndex)?.requiresPhoto != true) return
+            viewModelScope.launch {
+                try {
+                    val saved = photoMutex.withLock { withContext(localIoDispatcher) {
+                        val file = File(localPath)
+                        check(file.isFile && file.length() > 0)
+                        val entry = StoredPhotoProof(UUID.randomUUID().toString(), userId, attemptId, questId, stepIndex, localPath, java.time.Instant.now().toString(), category = quest.category)
+                        localStore.update { old -> old.copy(
+                            photos = old.photos + entry,
+                            events = old.events + photoEvent(entry, "photo_proof_captured"),
+                            photoQuests = old.photoQuests + (attemptId to PhotoQuestSnapshot(userId, questId, attemptId, current.currentStep, current.completedSteps)),
+                        ) }
+                    } }
+                    if (attachedUserId == userId) applyStoredPhotos(saved, userId)
+                    scheduleLocalSync(userId)
+                } catch (cancelled: CancellationException) { throw cancelled }
+                  catch (_: Exception) { reportPhotoProofError(stepIndex, "Could not save the captured photo. Please try again.") }
+            }
+            return
+        }
         _uiState.update {
             it.copy(
                 progressByQuest = it.progressByQuest + (
@@ -727,6 +971,7 @@ class AppViewModel(
     }
 
     fun retryPhotoProofUpload(stepIndex: Int) {
+        if (localStore != null) { retryPendingPhotoUploads(); return }
         val state = _uiState.value
         val questId = state.activeQuestId
         val attemptId = state.attemptIdByQuest[questId] ?: return
@@ -866,6 +1111,7 @@ class AppViewModel(
         )
 
         val attemptId = state.attemptIdByQuest[questId] ?: return
+        persistPhotoProgress(questId, attemptId, current)
         syncProgress("Saving quest progress…") {
             progressRepository?.saveProgress(
                 attemptId = attemptId,
@@ -884,6 +1130,7 @@ class AppViewModel(
         val attemptId = state.attemptIdByQuest[questId] ?: return
         if (current.abandoned || current.completedSteps.size >= quest.steps.size) return
         val evidence = buildBq6AbandonmentEvidence(reason, quest, current)
+        persistPhotoProgress(questId, attemptId, current, closed = true)
 
         recordDifficultyOutcome(DifficultyOutcome(quest.difficulty, completed = false, reason = reason))
         _uiState.update {
@@ -1042,8 +1289,52 @@ class AppViewModel(
     ) {
         val analytics = analyticsRepository ?: return
         val state = _uiState.value
+        val userId = attachedUserId
+        val store = localStore
+        // Capture the interaction time before asynchronous file I/O begins.
+        val eventOccurredAt = java.time.Instant.now().toString()
 
         viewModelScope.launch {
+            // Recommendation events support BQ9's secondary funnel. Queue them
+            // before delivery so an offline request or process restart cannot
+            // silently discard a shown/accepted/skipped interaction.
+            if (Bq9RecommendationOutbox.supports(eventType) && userId != null && store != null) {
+                try {
+                    withContext(localIoDispatcher) {
+                        Bq9RecommendationOutbox.enqueue(
+                            store = store,
+                            userId = userId,
+                            sessionId = analyticsSessionId,
+                            eventType = eventType,
+                            availableMinutes = state.availableTime,
+                            preferences = state.preferences,
+                            quest = quest,
+                            metadata = metadata,
+                            occurredAt = eventOccurredAt,
+                        )
+                    }
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    // If local storage is unavailable, preserve the previous
+                    // direct-send behavior rather than blocking app navigation.
+                    analytics.track(
+                        sessionId = analyticsSessionId,
+                        eventType = eventType,
+                        availableMinutes = state.availableTime,
+                        preferences = state.preferences,
+                        quest = quest,
+                        metadata = metadata,
+                    )
+                    return@launch
+                }
+                // Once persisted, a scheduler error must not trigger a second
+                // direct send. It will be rescheduled when this account resumes.
+                try {
+                    scheduleLocalSync(userId)
+                } catch (_: Exception) { /* safely retained on disk */ }
+                return@launch
+            }
             analytics.track(
                 sessionId = analyticsSessionId,
                 eventType = eventType,
@@ -1057,6 +1348,7 @@ class AppViewModel(
 
     private fun syncProgress(
         message: String,
+        onSuccess: (() -> Unit)? = null,
         operation: suspend () -> Result<Unit>,
     ) {
         viewModelScope.launch {
@@ -1077,6 +1369,7 @@ class AppViewModel(
                             progressSyncMessage = "Progress synced with Supabase",
                         )
                     }
+                    onSuccess?.invoke()
                 }
                 .onFailure { throwable ->
                     _uiState.update {

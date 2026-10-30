@@ -26,7 +26,9 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -184,10 +186,11 @@ fun OnboardingScreen(
             PrimaryButton(
                 text = if (step < 3) "Continue →" else "Start Exploring →",
                 onClick = viewModel::nextOnboardingStep,
+                enabled = !state.onboardingSaving,
             )
             Text(
                 text = "Skip setup — I'll explore freely",
-                modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable(onClick = viewModel::skipOnboarding).padding(10.dp),
+                modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable(enabled = !state.onboardingSaving, onClick = viewModel::skipOnboarding).padding(10.dp),
                 textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = .5f),
                 fontSize = 12.sp,
@@ -326,6 +329,28 @@ fun ExplorerScreen(
             }
         }
 
+        // Keep the catalogue visible during an outage, but let users retry
+        // as soon as internet comes back without restarting Sidequests.
+        if (state.catalogError != null && !state.catalogLoading) {
+            item {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = "Couldn't update quests. You can try again.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(onClick = viewModel::refreshQuestCatalog) {
+                        Text("Try again")
+                    }
+                }
+            }
+        }
+
         item {
             Card(
                 modifier = Modifier.padding(horizontal = 20.dp).fillMaxWidth(),
@@ -341,7 +366,7 @@ fun ExplorerScreen(
                     Text(
                         text = when {
                             state.catalogLoading -> "Syncing quest catalogue…"
-                            state.catalogError != null -> "Offline fallback · ${state.catalogError}"
+                            state.catalogError != null -> "${state.catalogSource} · remote refresh unavailable"
                             else -> state.catalogSource
                         },
                         color = Color.White.copy(alpha = .78f),
@@ -363,10 +388,13 @@ fun ExplorerScreen(
             }
         }
 
-        items(recommendations, key = { "rec-${it.id}" }) { quest ->
+        items(if (state.catalogLoading || state.recommendationLoading) emptyList() else recommendations, key = { "rec-${it.id}" }) { quest ->
+            if (quest.id == recommendations.firstOrNull()?.id && !state.catalogLoading && !state.recommendationLoading) {
+                LaunchedEffect(quest.id) { viewModel.firstOnboardingRecommendationVisible(quest.id) }
+            }
             QuestCard(
                 quest = quest,
-                onOpen = { viewModel.openQuestDetail(quest.id) },
+                onOpen = { viewModel.openQuestDetail(quest.id, fromSmartPicks = true) },
                 onSkip = { viewModel.skipQuest(quest.id) },
                 modifier = Modifier.padding(horizontal = 20.dp),
             )

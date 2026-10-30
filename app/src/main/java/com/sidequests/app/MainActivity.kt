@@ -42,6 +42,7 @@ class MainActivity : ComponentActivity() {
         } else null
         val factory = AppViewModelFactory(
             contextManager = contextManager,
+            applicationContext = applicationContext,
             alternativeContextOverride = demoContext,
             addressProvider = NominatimAddressProvider(),
         )
