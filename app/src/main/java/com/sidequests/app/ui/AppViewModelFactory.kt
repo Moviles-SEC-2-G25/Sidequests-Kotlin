@@ -12,6 +12,7 @@ import androidx.lifecycle.ViewModelProvider
 import com.sidequests.app.context.AddressProvider
 import com.sidequests.app.context.ContextManager
 import com.sidequests.app.context.UserContext
+import com.sidequests.app.data.settings.SettingsStore
 import com.sidequests.app.telemetry.FailureReporter
 
 class AppViewModelFactory(
@@ -19,6 +20,7 @@ class AppViewModelFactory(
     private val applicationContext: Context,
     private val alternativeContextOverride: UserContext? = null,
     private val addressProvider: AddressProvider? = null,
+    private val settingsStore: SettingsStore? = null,
     private val failureReporter: FailureReporter = FailureReporter.NONE,
 ) : ViewModelProvider.Factory {
 
@@ -41,6 +43,7 @@ class AppViewModelFactory(
             scheduleLocalSync = { userId -> LexSyncWorker.schedule(applicationContext, userId) },
             retryLocalSync = { userId -> LexSyncWorker.schedule(applicationContext, userId, retryNow = true) },
             addressProvider = addressProvider,
+            settingsStore = settingsStore,
             failureReporter = failureReporter,
         ) as T
     }

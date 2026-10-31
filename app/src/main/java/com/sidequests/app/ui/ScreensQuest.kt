@@ -64,9 +64,8 @@ import com.sidequests.app.sensor.camera.CameraPhotoProofService
 import com.sidequests.app.ui.theme.DiscoveryTeal
 import com.sidequests.app.ui.theme.ExplorerIndigo
 import com.sidequests.app.ui.theme.QuestAmber
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.sidequests.app.BuildConfig
 import com.sidequests.app.domain.SmartDifficultyAdvisor
+import com.sidequests.app.BuildConfig
 import com.sidequests.app.telemetry.AppModule
 import com.sidequests.app.telemetry.Bq1Telemetry
 import com.sidequests.app.ui.auth.PasswordChangeState

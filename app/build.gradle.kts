@@ -75,6 +75,7 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.10.0")
     implementation("androidx.lifecycle:lifecycle-process:2.10.0")
     implementation("androidx.work:work-runtime-ktx:2.12.0")
+    implementation("androidx.datastore:datastore-preferences:1.1.7")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.ui:ui-tooling-preview")
 
