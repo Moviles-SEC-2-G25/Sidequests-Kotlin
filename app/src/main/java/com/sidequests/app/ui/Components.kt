@@ -30,6 +30,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.layout.statusBarsPadding
+import com.sidequests.app.context.DeviceStatus
 import com.sidequests.app.model.AppScreen
 import com.sidequests.app.model.LocationMode
 import com.sidequests.app.model.Quest
@@ -265,6 +267,63 @@ fun AccentStat(label: String, value: String, emoji: String, color: Color = Disco
             Text(emoji, fontSize = 21.sp)
             Text(value, fontWeight = FontWeight.ExtraBold, color = color)
             Text(label, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = .65f))
+        }
+    }
+}
+
+/**
+ * Context-aware feature (Sprint 2, Carlos): banner that reacts to the phone context.
+ * Offline has priority over low battery. Nothing is shown when everything is normal.
+ */
+@Composable
+fun DeviceStatusBanner(
+    status: DeviceStatus,
+    onRetry: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val title: String
+    val body: String
+    val color: Color
+    when {
+        !status.isOnline -> {
+            title = "You're offline"
+            body = "Showing the last saved data. Actions that need internet will work again when you reconnect."
+            color = MaterialTheme.colorScheme.error
+        }
+        status.isLowBattery -> {
+            title = "Battery saver"
+            body = "Battery at ${status.batteryPercent}%. Location and weather are refreshed less often."
+            color = QuestAmber
+        }
+        else -> return
+    }
+
+    Surface(
+        modifier = modifier.fillMaxWidth().statusBarsPadding(),
+        color = color,
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(title, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                Text(body, color = Color.White.copy(alpha = .9f), fontSize = 11.sp)
+            }
+            if (!status.isOnline) {
+                Text(
+                    "Retry",
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(12.dp))
+                        .clickable(onClick = onRetry)
+                        .background(Color.White.copy(alpha = .2f))
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 12.sp,
+                )
+            }
         }
     }
 }

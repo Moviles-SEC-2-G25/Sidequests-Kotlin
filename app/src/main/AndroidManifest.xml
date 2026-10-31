@@ -11,6 +11,7 @@
         android:required="false" />
 
     <application
+        android:name=".SidequestsApplication"
         android:allowBackup="true"
         android:label="Sidequests"
         android:supportsRtl="true"

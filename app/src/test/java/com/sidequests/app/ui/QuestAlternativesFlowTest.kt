@@ -90,6 +90,38 @@ class QuestAlternativesFlowTest {
         assertEquals(1, analytics.events.count { it.type == "quest_alternative_selected" })
     }
 
+    @Test fun `offline acceptance cannot create an unconfirmed attempt or move to quest`() = runTest {
+        val vm = viewModel()
+        vm.onDeviceStatusChanged(DeviceStatus(isOnline = false))
+        val before = vm.uiState.value.screen
+        vm.acceptQuest("botanical-garden")
+        advanceUntilIdle()
+        assertEquals(before, vm.uiState.value.screen)
+        assertTrue(vm.uiState.value.attemptIdByQuest.isEmpty())
+        assertTrue(progress.accepted.isEmpty())
+        assertTrue(vm.uiState.value.progressSyncError.orEmpty().contains("internet"))
+        assertFalse(analytics.events.any { it.type == "quest_accepted" })
+    }
+
+    @Test fun `failed remote acceptance is not counted as a successful analytics event`() = runTest {
+        progress.failNextAccept = true
+        val vm = viewModel()
+        vm.acceptQuest("botanical-garden")
+        advanceUntilIdle()
+        assertNotNull(vm.uiState.value.progressSyncError)
+        assertFalse(analytics.events.any {
+            it.type == "quest_accepted" || it.type == "recommendation_accepted"
+        })
+    }
+
+    @Test fun `confirmed remote acceptance produces a quest accepted event`() = runTest {
+        val vm = viewModel()
+        vm.acceptQuest("botanical-garden")
+        advanceUntilIdle()
+        assertNull(vm.uiState.value.progressSyncError)
+        assertEquals(1, analytics.events.count { it.type == "quest_accepted" })
+    }
+
     @Test fun `save progress keeps the attempt and does not request alternatives or record abandonment`() = runTest {
         var reads = 0
         val vm = viewModel(reader = { reads++; context })
@@ -170,10 +202,15 @@ class QuestAlternativesFlowTest {
         }
     }
     private class RecordingProgress : QuestProgressRepository {
+        var failNextAccept = false
         val accepted = mutableListOf<Pair<String, String>>()
         val abandonments = mutableListOf<Pair<String, String?>>()
         val saved = mutableListOf<String>()
         override suspend fun acceptQuest(questId: String, attemptId: String): Result<Unit> {
+            if (failNextAccept) {
+                failNextAccept = false
+                return Result.failure(IllegalStateException("Supabase is unavailable"))
+            }
             accepted += questId to attemptId
             return Result.success(Unit)
         }

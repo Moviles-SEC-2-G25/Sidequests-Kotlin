@@ -34,6 +34,14 @@ data class PendingAnalyticsEvent(
     val questId: String? = null,
     val metadata: JsonObject,
     val category: String? = null,
+    // Optional to keep existing onboarding outbox files readable.
+    val availableMinutes: Int? = null,
+    val socialLevel: String? = null,
+    val locationMode: String? = null,
+    val questDurationMinutes: Int? = null,
+    val questDifficulty: String? = null,
+    val estimatedCost: Int? = null,
+    val distanceMeters: Int? = null,
 )
 
 @Serializable

@@ -9,13 +9,19 @@ import com.sidequests.app.data.local.LexSyncWorker
 import com.sidequests.app.data.remote.SupabaseProvider
 import java.io.File
 import androidx.lifecycle.ViewModelProvider
+import com.sidequests.app.context.AddressProvider
 import com.sidequests.app.context.ContextManager
 import com.sidequests.app.context.UserContext
+import com.sidequests.app.data.settings.SettingsStore
+import com.sidequests.app.telemetry.FailureReporter
 
 class AppViewModelFactory(
     private val contextManager: ContextManager,
     private val applicationContext: Context,
     private val alternativeContextOverride: UserContext? = null,
+    private val addressProvider: AddressProvider? = null,
+    private val settingsStore: SettingsStore? = null,
+    private val failureReporter: FailureReporter = FailureReporter.NONE,
 ) : ViewModelProvider.Factory {
 
     @Suppress("UNCHECKED_CAST")
@@ -36,6 +42,9 @@ class AppViewModelFactory(
             localStore = LexSyncWorker.store(applicationContext),
             scheduleLocalSync = { userId -> LexSyncWorker.schedule(applicationContext, userId) },
             retryLocalSync = { userId -> LexSyncWorker.schedule(applicationContext, userId, retryNow = true) },
+            addressProvider = addressProvider,
+            settingsStore = settingsStore,
+            failureReporter = failureReporter,
         ) as T
     }
 }
