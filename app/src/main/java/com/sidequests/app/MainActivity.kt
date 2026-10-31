@@ -16,6 +16,7 @@ import com.sidequests.app.context.NominatimAddressProvider
 import com.sidequests.app.context.OpenMeteoWeatherProvider
 import com.sidequests.app.data.settings.DataStoreSettingsStore
 import com.sidequests.app.sensor.light.AmbientLightMonitor
+import com.sidequests.app.telemetry.Bq1Telemetry
 import com.sidequests.app.ui.AppViewModel
 import com.sidequests.app.ui.AppViewModelFactory
 import com.sidequests.app.ui.SidequestsApp
@@ -47,8 +48,28 @@ class MainActivity : ComponentActivity() {
             alternativeContextOverride = demoContext,
             addressProvider = NominatimAddressProvider(),
             settingsStore = DataStoreSettingsStore(applicationContext),
+            failureReporter = Bq1Telemetry,
         )
         val appViewModel = ViewModelProvider(this, factory)[AppViewModel::class.java]
+        // BQ1 (#21): lets the app-wide lifecycle observer know whether a Nearby quest is active.
+        Bq1Telemetry.activeNearbyQuestProvider = { appViewModel.activeNearbyQuestId() }
+
+        deviceStatusMonitor = DeviceStatusMonitor(applicationContext)
+        ambientLightMonitor = AmbientLightMonitor(applicationContext)
+        appViewModel.setLightSensorAvailable(ambientLightMonitor.isAvailable)
+
+        // Forward connectivity/battery and ambient light changes only while the screen is visible.
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                launch { deviceStatusMonitor.status.collect { appViewModel.onDeviceStatusChanged(it) } }
+                launch { ambientLightMonitor.lux.collect { lux -> if (lux != null) appViewModel.onAmbientLux(lux) } }
+                launch {
+                    ambientLightMonitor.isDark.collect { isDark ->
+                        if (isDark != null) appViewModel.onAmbientLightChanged(isDark)
+                    }
+                }
+            }
+        }
 
         deviceStatusMonitor = DeviceStatusMonitor(applicationContext)
         ambientLightMonitor = AmbientLightMonitor(applicationContext)
@@ -76,6 +97,11 @@ class MainActivity : ComponentActivity() {
         super.onStart()
         deviceStatusMonitor.start()
         ambientLightMonitor.start()
+    }
+
+    override fun onDestroy() {
+        if (isFinishing) Bq1Telemetry.activeNearbyQuestProvider = { null }
+        super.onDestroy()
     }
 
     override fun onStop() {

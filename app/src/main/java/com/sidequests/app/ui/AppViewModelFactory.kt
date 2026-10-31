@@ -13,6 +13,7 @@ import com.sidequests.app.context.AddressProvider
 import com.sidequests.app.context.ContextManager
 import com.sidequests.app.context.UserContext
 import com.sidequests.app.data.settings.SettingsStore
+import com.sidequests.app.telemetry.FailureReporter
 
 class AppViewModelFactory(
     private val contextManager: ContextManager,
@@ -20,6 +21,7 @@ class AppViewModelFactory(
     private val alternativeContextOverride: UserContext? = null,
     private val addressProvider: AddressProvider? = null,
     private val settingsStore: SettingsStore? = null,
+    private val failureReporter: FailureReporter = FailureReporter.NONE,
 ) : ViewModelProvider.Factory {
 
     @Suppress("UNCHECKED_CAST")
@@ -42,6 +44,7 @@ class AppViewModelFactory(
             retryLocalSync = { userId -> LexSyncWorker.schedule(applicationContext, userId, retryNow = true) },
             addressProvider = addressProvider,
             settingsStore = settingsStore,
+            failureReporter = failureReporter,
         ) as T
     }
 }

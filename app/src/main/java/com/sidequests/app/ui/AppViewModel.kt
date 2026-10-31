@@ -14,6 +14,8 @@ import com.sidequests.app.domain.TimeChoice
 import com.sidequests.app.data.settings.SmartHistory
 import com.sidequests.app.data.settings.ThemeSettings
 import com.sidequests.app.data.settings.SettingsStore
+import com.sidequests.app.telemetry.AppModule
+import com.sidequests.app.telemetry.FailureReporter
 import com.sidequests.app.context.label
 import com.sidequests.app.context.ContextAwareRecommendationEngine
 import com.sidequests.app.context.ContextManager
@@ -46,6 +48,7 @@ import com.sidequests.app.data.photo.photoEvent
 import com.sidequests.app.data.recommendation.RecommendationRepository
 import com.sidequests.app.data.recommendation.SupabaseRecommendationRepository
 import com.sidequests.app.model.AppScreen
+import com.sidequests.app.model.LocationMode
 import com.sidequests.app.model.AbandonmentReason
 import com.sidequests.app.model.Quest
 import com.sidequests.app.model.QuestDifficulty
@@ -109,6 +112,8 @@ class AppViewModel(
     private val addressProvider: AddressProvider? = null,
     /** #31: DataStore persistence of theme and smart-feature history (null in unit tests). */
     private val settingsStore: SettingsStore? = null,
+    /** BQ1 (#22): non-fatal module failures are reported here (no-op by default/in tests). */
+    private val failureReporter: FailureReporter = FailureReporter.NONE,
 ) : ViewModel() {
 
     private val analyticsSessionId = UUID.randomUUID().toString()
@@ -173,7 +178,6 @@ class AppViewModel(
                         timeChoices = it.timeChoices,
                         difficultyOutcomes = it.difficultyOutcomes,
                         difficultySuggestionDismissedAt = it.difficultySuggestionDismissedAt,
-                        preferredDifficulty = it.preferences.difficulty,
                     )
                 }
                 .distinctUntilChanged()
@@ -189,8 +193,7 @@ class AppViewModel(
         val store = settingsStore ?: return
         viewModelScope.launch {
             val history = runCatching { store.loadHistory(userId) }.getOrNull() ?: SmartHistory()
-            // Wait until the account's saved setup (onboarding preferences) has been applied, so the
-            // saved difficulty is not overwritten by it afterwards.
+            // Wait until the account's saved setup (preferences, onboarding) has been applied.
             withTimeoutOrNull(5_000) { _uiState.first { it.accountUserId == userId } }
             if (attachedUserId != userId) return@launch
             _uiState.update {
@@ -198,9 +201,6 @@ class AppViewModel(
                     timeChoices = history.timeChoices,
                     difficultyOutcomes = history.difficultyOutcomes,
                     difficultySuggestionDismissedAt = history.difficultySuggestionDismissedAt,
-                    preferences = history.preferredDifficulty
-                        ?.let { level -> it.preferences.copy(difficulty = level) }
-                        ?: it.preferences,
                 )
             }
             historyOwner = userId
@@ -331,10 +331,10 @@ class AppViewModel(
     }
 
     private fun persistSetupPreferences() {
-        if (_uiState.value.screen == AppScreen.Onboarding) {
-            val preferences = _uiState.value.preferences
-            updateJourney({ it.savePreferences(preferences) }, schedule = false)
-        }
+        // Explorer choices are user preferences too, not just onboarding answers.
+        if (attachedUserId == null || localStore == null) return
+        val preferences = _uiState.value.preferences
+        updateJourney({ it.savePreferences(preferences) }, schedule = false)
     }
 
     private fun persistPhotoProgress(questId: String, attemptId: String, progress: QuestProgress, closed: Boolean = false) {
@@ -385,6 +385,7 @@ class AppViewModel(
                     lookupAddress(context.location)
                 }
                 .onFailure { error ->
+                    failureReporter.report(AppModule.CONTEXT, error, null)
                     _contextState.update {
                         it.copy(
                             loading = false,
@@ -407,7 +408,11 @@ class AppViewModel(
             return
         }
         viewModelScope.launch {
-            val address = runCatching { provider.addressFor(location) }.getOrNull()
+            val result = runCatching { provider.addressFor(location) }
+            val address = result.getOrNull()
+            if (address == null) {
+                failureReporter.report(AppModule.GEOCODING, result.exceptionOrNull(), "Reverse geocoding returned no address")
+            }
             _contextState.update {
                 if (address != null) it.copy(address = address, addressError = null)
                 else it.copy(addressError = ADDRESS_UNAVAILABLE_MESSAGE)
@@ -482,6 +487,15 @@ class AppViewModel(
     fun activeProgress(): QuestProgress =
         _uiState.value.progressByQuest[_uiState.value.activeQuestId] ?: QuestProgress()
 
+    /** BQ1 (#21): id of the active location-based (Nearby/GPS) quest, or null. */
+    fun activeNearbyQuestId(): String? {
+        if (!hasActiveQuest()) return null
+        val quest = activeQuest()
+        val progress = activeProgress()
+        if (progress.abandoned || progress.completedSteps.size >= quest.steps.size) return null
+        return quest.id.takeIf { quest.location == LocationMode.Gps }
+    }
+
     fun hasActiveQuest(): Boolean {
         val state = _uiState.value
         return state.activeQuestId in state.attemptIdByQuest
@@ -542,6 +556,7 @@ class AppViewModel(
                     refreshRecommendations()
                 }
                 .onFailure { throwable ->
+                    failureReporter.report(AppModule.CATALOG, throwable, null)
                     _uiState.update {
                         it.copy(
                             catalogLoading = false,
@@ -602,6 +617,7 @@ class AppViewModel(
                 }
                 .onFailure { throwable ->
                     if (generation != accountGeneration) return@onFailure
+                    failureReporter.report(AppModule.RECOMMENDATIONS, throwable, null)
                     _uiState.update {
                         it.copy(
                             recommendationLoading = false,
@@ -637,6 +653,17 @@ class AppViewModel(
         } ?: false
         val existingAttemptId = currentState.attemptIdByQuest[questId]
         val createsNewAttempt = existingAttemptId == null || previousAttemptFinished
+        // Offline browsing is supported, but starting a new attempt is still a
+        // server-authoritative operation. Do not create orphaned photos/progress.
+        if (createsNewAttempt && progressRepository != null && !_deviceStatus.value.isOnline) {
+            _uiState.update {
+                it.copy(
+                    progressSyncError = "Connect to the internet before accepting a new quest.",
+                    progressSyncMessage = null,
+                )
+            }
+            return
+        }
         val fromRecommendation = isRecommendationAcceptance(
             questId = questId,
             openedFromSmartPicksId = openedFromSmartPicksId,
@@ -711,11 +738,13 @@ class AppViewModel(
         _uiState.update {
             it.copy(
                 availableTime = minutes,
+                preferences = it.preferences.copy(typicalTime = minutes),
                 remoteRecommendationIds = emptyList(),
                 timeChoices = (it.timeChoices + choice).takeLast(SmartTimeAdvisor.HISTORY_SIZE),
                 smartTimeHint = null,
             )
         }
+        persistSetupPreferences()
         refreshRecommendations()
     }
 
@@ -877,6 +906,7 @@ class AppViewModel(
                 remoteRecommendationIds = emptyList(),
             )
         }
+        persistSetupPreferences()
 
         val eventType = when (normalized) {
             "anywhere" -> "location_independent_mode_selected"
@@ -1135,7 +1165,8 @@ class AppViewModel(
                         },
                     )
                 }
-                .onFailure {
+                .onFailure { uploadError ->
+                    failureReporter.report(AppModule.PHOTO_PROOF, uploadError, null)
                     _uiState.update { state ->
                         val current = state.progressByQuest[questId] ?: QuestProgress()
                         state.copy(
@@ -1449,6 +1480,7 @@ class AppViewModel(
                     onSuccess?.invoke()
                 }
                 .onFailure { throwable ->
+                    failureReporter.report(AppModule.QUEST_PROGRESS, throwable, null)
                     _uiState.update {
                         it.copy(
                             progressSyncing = false,

@@ -29,8 +29,6 @@ data class SmartHistory(
     val timeChoices: List<TimeChoice> = emptyList(),
     val difficultyOutcomes: List<DifficultyOutcome> = emptyList(),
     val difficultySuggestionDismissedAt: Int? = null,
-    /** Level chosen in Profile or by accepting a smart difficulty suggestion. */
-    val preferredDifficulty: QuestDifficulty? = null,
 )
 
 interface SettingsStore {
@@ -77,7 +75,6 @@ class DataStoreSettingsStore(context: Context) : SettingsStore {
             timeChoices = SettingsCodec.decodeTimeChoices(prefs[timeChoicesKey(userId)]),
             difficultyOutcomes = SettingsCodec.decodeOutcomes(prefs[outcomesKey(userId)]),
             difficultySuggestionDismissedAt = prefs[dismissedKey(userId)],
-            preferredDifficulty = QuestDifficulty.entries.firstOrNull { it.name == prefs[preferredDifficultyKey(userId)] },
         )
     }
 
@@ -87,8 +84,6 @@ class DataStoreSettingsStore(context: Context) : SettingsStore {
             prefs[outcomesKey(userId)] = SettingsCodec.encodeOutcomes(history.difficultyOutcomes)
             val dismissed = history.difficultySuggestionDismissedAt
             if (dismissed == null) prefs.remove(dismissedKey(userId)) else prefs[dismissedKey(userId)] = dismissed
-            val difficulty = history.preferredDifficulty
-            if (difficulty == null) prefs.remove(preferredDifficultyKey(userId)) else prefs[preferredDifficultyKey(userId)] = difficulty.name
         }
     }
 
@@ -98,7 +93,6 @@ class DataStoreSettingsStore(context: Context) : SettingsStore {
         fun timeChoicesKey(userId: String) = stringPreferencesKey("time_choices_$userId")
         fun outcomesKey(userId: String) = stringPreferencesKey("difficulty_outcomes_$userId")
         fun dismissedKey(userId: String) = intPreferencesKey("difficulty_dismissed_at_$userId")
-        fun preferredDifficultyKey(userId: String) = stringPreferencesKey("preferred_difficulty_$userId")
     }
 }
 
