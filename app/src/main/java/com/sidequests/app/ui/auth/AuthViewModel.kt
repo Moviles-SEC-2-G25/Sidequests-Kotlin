@@ -28,6 +28,13 @@ data class AuthUiState(
     val error: String? = null,
 )
 
+/** Authentication feature: state of the "Change password" dialog in Profile. */
+data class PasswordChangeState(
+    val isBusy: Boolean = false,
+    val message: String? = null,
+    val error: String? = null,
+)
+
 class AuthViewModel(
     private val repository: AuthRepository? =
         if (SupabaseProvider.isConfigured) {
@@ -45,6 +52,9 @@ class AuthViewModel(
         }
     )
     val uiState: StateFlow<AuthUiState> = _uiState.asStateFlow()
+
+    private val _passwordState = MutableStateFlow(PasswordChangeState())
+    val passwordState: StateFlow<PasswordChangeState> = _passwordState.asStateFlow()
 
     init {
         repository?.let { authRepository ->
@@ -188,6 +198,43 @@ class AuthViewModel(
 
     fun clearFeedback() {
         _uiState.update { it.copy(message = null, error = null) }
+    }
+
+    /**
+     * Authentication feature: changes the password from Profile.
+     * Eventual connectivity: the request needs the auth server, so it is blocked with a clear
+     * message while offline instead of failing with a generic network error.
+     */
+    fun changePassword(newPassword: String, confirmation: String, isOnline: Boolean) {
+        val authRepository = repository ?: return
+        val validationError = when {
+            newPassword.length < 6 -> "Password must contain at least 6 characters."
+            newPassword != confirmation -> "Passwords do not match."
+            !isOnline -> "You're offline. Connect to the internet to change your password."
+            else -> null
+        }
+        if (validationError != null) {
+            _passwordState.value = PasswordChangeState(error = validationError)
+            return
+        }
+
+        viewModelScope.launch {
+            _passwordState.value = PasswordChangeState(isBusy = true)
+            runCatching { authRepository.updatePassword(newPassword) }
+                .onSuccess {
+                    _passwordState.value = PasswordChangeState(message = "Password updated.")
+                }
+                .onFailure { throwable ->
+                    _passwordState.value = PasswordChangeState(
+                        error = throwable.message
+                            ?: "Unable to update the password. Check your connection and try again.",
+                    )
+                }
+        }
+    }
+
+    fun clearPasswordFeedback() {
+        _passwordState.value = PasswordChangeState()
     }
 
     private fun validCredentials(email: String, password: String): Boolean {

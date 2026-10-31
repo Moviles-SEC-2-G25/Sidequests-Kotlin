@@ -81,7 +81,7 @@ fun QuestDto.toDomain(
             "anywhere" -> "Anywhere"
             else -> locationName ?: "Nearby"
         },
-        budget = if (budgetAmount == 0) "Free" else "\$budgetAmount",
+        budget = if (budgetAmount == 0) "Free" else "$" + budgetAmount,
         budgetAmount = budgetAmount,
         difficulty = when (difficulty.lowercase()) {
             "medium" -> QuestDifficulty.Medium

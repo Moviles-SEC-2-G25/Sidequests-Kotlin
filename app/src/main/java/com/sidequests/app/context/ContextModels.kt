@@ -16,6 +16,7 @@ enum class WeatherCondition {
 data class WeatherData(
     val temperatureCelsius: Double,
     val condition: WeatherCondition,
+    val isStale: Boolean = false,
 )
 
 enum class TimeOfDay { MORNING, AFTERNOON, EVENING, NIGHT }
@@ -32,6 +33,11 @@ data class ContextUiState(
     val context: UserContext = UserContext(timeOfDay = timeOfDayFromHour(java.time.ZonedDateTime.now().hour)),
     val error: String? = null,
     val locationMode: LocationMode = LocationMode.Anywhere,
+    /** Last known human-readable address (Nominatim). Kept when a new lookup fails. */
+    val address: String? = null,
+    val addressError: String? = null,
+    /** True when a refresh was skipped to save battery and the last context is reused. */
+    val batterySaverActive: Boolean = false,
 )
 
 fun timeOfDayFromHour(hour: Int): TimeOfDay = when (hour) {

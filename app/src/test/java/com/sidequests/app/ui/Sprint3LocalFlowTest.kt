@@ -75,6 +75,28 @@ class Sprint3LocalFlowTest {
         assertEquals(4, store().read().events.count { it.eventType == "onboarding_step_completed" })
     }
 
+    @Test fun `Explorer time and location survive a process restart for the same account`() = runTest {
+        val vm = vm()
+        vm.attachAccount("alice")
+        scheduled.receive()
+        vm.skipOnboarding()
+        scheduled.receive()
+        vm.setAvailableTime(45)
+        vm.setLocationMode("gps")
+        advanceUntilIdle()
+
+        assertEquals(45, store().read().journeys.getValue("alice").preferences.typicalTime)
+        assertEquals("gps", store().read().journeys.getValue("alice").preferences.locationMode)
+
+        models.clear()
+        val restored = vm()
+        restored.attachAccount("alice")
+        advanceUntilIdle()
+        assertEquals(45, restored.uiState.value.availableTime)
+        assertEquals(45, restored.uiState.value.preferences.typicalTime)
+        assertEquals("gps", restored.uiState.value.preferences.locationMode)
+    }
+
     @Test fun `capture queue and step evidence survive view model recreation`() = runTest {
         val vm = vm()
         vm.attachAccount("alice")

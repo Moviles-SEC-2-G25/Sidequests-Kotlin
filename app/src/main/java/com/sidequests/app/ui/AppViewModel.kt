@@ -4,9 +4,24 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.sidequests.app.BuildConfig
+import com.sidequests.app.context.AddressProvider
+import com.sidequests.app.domain.DifficultyOutcome
+import com.sidequests.app.domain.DifficultyStreaks
+import com.sidequests.app.domain.DifficultySuggestion
+import com.sidequests.app.domain.SmartDifficultyAdvisor
+import com.sidequests.app.domain.SmartTimeAdvisor
+import com.sidequests.app.domain.TimeChoice
+import com.sidequests.app.data.settings.SmartHistory
+import com.sidequests.app.data.settings.ThemeSettings
+import com.sidequests.app.data.settings.SettingsStore
+import com.sidequests.app.telemetry.AppModule
+import com.sidequests.app.telemetry.FailureReporter
+import com.sidequests.app.context.label
 import com.sidequests.app.context.ContextAwareRecommendationEngine
 import com.sidequests.app.context.ContextManager
 import com.sidequests.app.context.ContextUiState
+import com.sidequests.app.context.DeviceStatus
+import com.sidequests.app.context.LocationData
 import com.sidequests.app.context.UserContext
 import com.sidequests.app.context.timeOfDayFromHour
 import com.sidequests.app.data.QuestCatalogueOrigin
@@ -17,6 +32,7 @@ import com.sidequests.app.data.remote.SupabaseProvider
 import com.sidequests.app.data.progress.QuestProgressRepository
 import com.sidequests.app.data.progress.SupabaseQuestProgressRepository
 import com.sidequests.app.data.analytics.AnalyticsRepository
+import com.sidequests.app.data.analytics.Bq9RecommendationOutbox
 import com.sidequests.app.data.analytics.buildRecommendationContextMetadata
 import com.sidequests.app.data.analytics.buildBq6AbandonmentEvidence
 import com.sidequests.app.data.analytics.SupabaseAnalyticsRepository
@@ -30,8 +46,10 @@ import com.sidequests.app.data.local.StoredPhotoProof
 import com.sidequests.app.data.local.PhotoQuestSnapshot
 import com.sidequests.app.data.photo.photoEvent
 import com.sidequests.app.data.recommendation.RecommendationRepository
+import com.sidequests.app.data.recommendation.CachedRecommendationRepository
 import com.sidequests.app.data.recommendation.SupabaseRecommendationRepository
 import com.sidequests.app.model.AppScreen
+import com.sidequests.app.model.LocationMode
 import com.sidequests.app.model.AbandonmentReason
 import com.sidequests.app.model.Quest
 import com.sidequests.app.model.QuestDifficulty
@@ -56,6 +74,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -74,8 +95,10 @@ class AppViewModel(
         if (SupabaseProvider.isConfigured) SupabaseAnalyticsRepository(SupabaseProvider.client)
         else null,
     private val recommendationRepository: RecommendationRepository? =
-        if (SupabaseProvider.isConfigured) SupabaseRecommendationRepository(SupabaseProvider.client)
-        else null,
+        if (SupabaseProvider.isConfigured) {
+            // #23: LRU + TTL cache in front of the Smart Picks RPC.
+            CachedRecommendationRepository(SupabaseRecommendationRepository(SupabaseProvider.client))
+        } else null,
     private val photoProofRepository: PhotoProofRepository? =
         if (SupabaseProvider.isConfigured) {
             SupabasePhotoProofRepository(
@@ -89,6 +112,11 @@ class AppViewModel(
     private val scheduleLocalSync: (String) -> Unit = {},
     private val localIoDispatcher: kotlinx.coroutines.CoroutineDispatcher = Dispatchers.IO,
     private val retryLocalSync: (String) -> Unit = scheduleLocalSync,
+    private val addressProvider: AddressProvider? = null,
+    /** #31: DataStore persistence of theme and smart-feature history (null in unit tests). */
+    private val settingsStore: SettingsStore? = null,
+    /** BQ1 (#22): non-fatal module failures are reported here (no-op by default/in tests). */
+    private val failureReporter: FailureReporter = FailureReporter.NONE,
 ) : ViewModel() {
 
     private val analyticsSessionId = UUID.randomUUID().toString()
@@ -106,25 +134,113 @@ class AppViewModel(
     val uiState: StateFlow<SidequestsUiState> = _uiState.asStateFlow()
     val contextState: StateFlow<ContextUiState> = _contextState.asStateFlow()
 
+    // Context-aware feature: latest connectivity/battery snapshot from DeviceStatusMonitor.
+    private val _deviceStatus = MutableStateFlow(DeviceStatus())
+    val deviceStatus: StateFlow<DeviceStatus> = _deviceStatus.asStateFlow()
+
+    // Smart feature: when the last context was read, used by the battery-aware refresh policy.
+    private var lastContextReadAtMillis: Long = 0L
+
+    // Sensor feature: last decision from the ambient light sensor (null until the first reading).
+    private var lastAmbientDark: Boolean? = null
+
     init {
         refreshContext()
         refreshQuestCatalog()
+        restoreAndPersistSettings()
+    }
+
+    /** #31: user whose smart-feature history has been restored (and may now be saved). */
+    @Volatile private var historyOwner: String? = null
+
+    /**
+     * Local storage (#31): restores the device theme, then saves every change of theme and of the
+     * signed-in user's smart-feature history. Saving starts only after each restore, so defaults
+     * never overwrite what was saved.
+     */
+    private fun restoreAndPersistSettings() {
+        val store = settingsStore ?: return
+        viewModelScope.launch {
+            runCatching { store.loadTheme() }.getOrNull()?.let { theme ->
+                _uiState.update {
+                    it.copy(
+                        darkMode = theme.darkMode,
+                        autoThemeEnabled = theme.autoThemeEnabled && it.lightSensorAvailable,
+                    )
+                }
+            }
+            launch {
+                _uiState
+                    .map { ThemeSettings(it.darkMode, it.autoThemeEnabled) }
+                    .distinctUntilChanged()
+                    .collect { theme -> runCatching { store.saveTheme(theme) } }
+            }
+            _uiState
+                .map {
+                    SmartHistory(
+                        timeChoices = it.timeChoices,
+                        difficultyOutcomes = it.difficultyOutcomes,
+                        difficultySuggestionDismissedAt = it.difficultySuggestionDismissedAt,
+                    )
+                }
+                .distinctUntilChanged()
+                .collect { history ->
+                    val owner = historyOwner ?: return@collect
+                    runCatching { store.saveHistory(owner, history) }
+                }
+        }
+    }
+
+    /** #31: loads the smart-feature history of the account that just signed in. */
+    private fun restoreHistory(userId: String) {
+        val store = settingsStore ?: return
+        viewModelScope.launch {
+            val history = runCatching { store.loadHistory(userId) }.getOrNull() ?: SmartHistory()
+            // Wait until the account's saved setup (preferences, onboarding) has been applied.
+            withTimeoutOrNull(5_000) { _uiState.first { it.accountUserId == userId } }
+            if (attachedUserId != userId) return@launch
+            _uiState.update {
+                it.copy(
+                    timeChoices = history.timeChoices,
+                    difficultyOutcomes = history.difficultyOutcomes,
+                    difficultySuggestionDismissedAt = history.difficultySuggestionDismissedAt,
+                )
+            }
+            historyOwner = userId
+        }
+    }
+
+    /**
+     * New account state. Device-level settings (theme, light sensor) are kept, because they belong
+     * to the phone, not to the signed-in user.
+     */
+    private fun freshAccountState(): SidequestsUiState {
+        val current = _uiState.value
+        return SidequestsUiState(
+            darkMode = current.darkMode,
+            autoThemeEnabled = current.autoThemeEnabled,
+            lightSensorAvailable = current.lightSensorAvailable,
+            ambientLux = current.ambientLux,
+        )
     }
 
     fun detachAccount() {
+        historyOwner = null
         attachedUserId = null
         accountGeneration += 1
         photoObserver?.cancel()
         alternativeJob?.cancel()
-        _uiState.value = SidequestsUiState()
+        _uiState.value = freshAccountState()
     }
 
     fun attachAccount(userId: String) {
         if (attachedUserId == userId && _uiState.value.accountUserId == userId && _uiState.value.localStateError == null) return
+        historyOwner = null
         attachedUserId = userId
         accountGeneration += 1
         photoObserver?.cancel()
-        _uiState.value = SidequestsUiState()
+        _uiState.value = freshAccountState()
+        restoreHistory(userId)
         val store = localStore ?: run {
             _uiState.update { it.copy(accountUserId = userId) }
             return
@@ -219,10 +335,10 @@ class AppViewModel(
     }
 
     private fun persistSetupPreferences() {
-        if (_uiState.value.screen == AppScreen.Onboarding) {
-            val preferences = _uiState.value.preferences
-            updateJourney({ it.savePreferences(preferences) }, schedule = false)
-        }
+        // Explorer choices are user preferences too, not just onboarding answers.
+        if (attachedUserId == null || localStore == null) return
+        val preferences = _uiState.value.preferences
+        updateJourney({ it.savePreferences(preferences) }, schedule = false)
     }
 
     private fun persistActiveQuestProgress(questId: String, attemptId: String, progress: QuestProgress, closed: Boolean = false) {
@@ -242,18 +358,37 @@ class AppViewModel(
         }
     }
 
-    fun refreshContext() {
+    /**
+     * Smart feature (battery-aware context): with low battery and no charger, GPS + weather are
+     * not requested again if the last context is recent enough; the last context is reused and
+     * the UI says so. [force] (manual refresh, reconnection) always reads a new context.
+     */
+    fun refreshContext(force: Boolean = false) {
+        val recentContext = lastContextReadAtMillis > 0L &&
+            System.currentTimeMillis() - lastContextReadAtMillis < BATTERY_SAVER_REUSE_MILLIS
+        if (!force && _deviceStatus.value.isLowBattery && recentContext) {
+            _contextState.update { it.copy(loading = false, batterySaverActive = true) }
+            return
+        }
+
         viewModelScope.launch {
             _contextState.update { it.copy(loading = true, error = null) }
             runCatching { contextManager.readContext() }
                 .onSuccess { context ->
+                    lastContextReadAtMillis = System.currentTimeMillis()
+                    val previous = _contextState.value
                     _contextState.value = ContextUiState(
                         loading = false,
                         context = context,
                         error = null,
+                        address = previous.address,
+                        addressError = previous.addressError,
+                        batterySaverActive = false,
                     )
+                    lookupAddress(context.location)
                 }
                 .onFailure { error ->
+                    failureReporter.report(AppModule.CONTEXT, error, null)
                     _contextState.update {
                         it.copy(
                             loading = false,
@@ -261,6 +396,86 @@ class AppViewModel(
                         )
                     }
                 }
+        }
+    }
+
+    /**
+     * External service feature: reverse geocoding with Nominatim. Offline, or when the lookup
+     * fails, the last known address is kept and an explanatory message is shown instead.
+     */
+    private fun lookupAddress(location: LocationData?) {
+        val provider = addressProvider ?: return
+        if (location == null) return
+        if (!_deviceStatus.value.isOnline) {
+            _contextState.update { it.copy(addressError = ADDRESS_OFFLINE_MESSAGE) }
+            return
+        }
+        viewModelScope.launch {
+            val result = runCatching { provider.addressFor(location) }
+            val address = result.getOrNull()
+            if (address == null) {
+                failureReporter.report(AppModule.GEOCODING, result.exceptionOrNull(), "Reverse geocoding returned no address")
+            }
+            _contextState.update {
+                if (address != null) it.copy(address = address, addressError = null)
+                else it.copy(addressError = ADDRESS_UNAVAILABLE_MESSAGE)
+            }
+        }
+    }
+
+    /**
+     * Context-aware feature: receives connectivity/battery changes. When the phone comes back
+     * online, the network-dependent data (catalogue, Smart Picks, context and address) is
+     * refreshed automatically instead of waiting for the user.
+     */
+    fun onDeviceStatusChanged(status: DeviceStatus) {
+        val previous = _deviceStatus.value
+        _deviceStatus.value = status
+        if (!previous.isOnline && status.isOnline) {
+            retryNetworkWork()
+        }
+    }
+
+    /** Manual "Retry" from the offline banner, also used after reconnection. */
+    fun retryNetworkWork() {
+        refreshQuestCatalog()
+        refreshRecommendations()
+        refreshContext(force = true)
+    }
+
+    /** Sensor feature: availability of the ambient light sensor on this device. */
+    fun setLightSensorAvailable(available: Boolean) {
+        _uiState.update {
+            it.copy(
+                lightSensorAvailable = available,
+                autoThemeEnabled = it.autoThemeEnabled && available,
+            )
+        }
+    }
+
+    /** Sensor feature: new dark/light decision from the ambient light sensor. */
+    fun onAmbientLightChanged(isDark: Boolean) {
+        lastAmbientDark = isDark
+        if (_uiState.value.autoThemeEnabled) {
+            _uiState.update { it.copy(darkMode = isDark) }
+        }
+    }
+
+    /** Sensor feature: latest ambient light reading, rounded so the UI only updates on real changes. */
+    fun onAmbientLux(lux: Float) {
+        val rounded = kotlin.math.round(lux)
+        if (_uiState.value.ambientLux != rounded) _uiState.update { it.copy(ambientLux = rounded) }
+    }
+
+    /** Sensor feature: turns the automatic (light sensor) theme on or off. */
+    fun toggleAutoTheme() {
+        _uiState.update { state ->
+            if (!state.lightSensorAvailable) return@update state
+            val enabled = !state.autoThemeEnabled
+            state.copy(
+                autoThemeEnabled = enabled,
+                darkMode = if (enabled) lastAmbientDark ?: state.darkMode else state.darkMode,
+            )
         }
     }
 
@@ -274,6 +489,15 @@ class AppViewModel(
 
     fun activeProgress(): QuestProgress =
         _uiState.value.progressByQuest[_uiState.value.activeQuestId] ?: QuestProgress()
+
+    /** BQ1 (#21): id of the active location-based (Nearby/GPS) quest, or null. */
+    fun activeNearbyQuestId(): String? {
+        if (!hasActiveQuest()) return null
+        val quest = activeQuest()
+        val progress = activeProgress()
+        if (progress.abandoned || progress.completedSteps.size >= quest.steps.size) return null
+        return quest.id.takeIf { quest.location == LocationMode.Gps }
+    }
 
     fun hasActiveQuest(): Boolean {
         val state = _uiState.value
@@ -335,6 +559,7 @@ class AppViewModel(
                     refreshRecommendations()
                 }
                 .onFailure { throwable ->
+                    failureReporter.report(AppModule.CATALOG, throwable, null)
                     _uiState.update {
                         it.copy(
                             catalogLoading = false,
@@ -374,7 +599,11 @@ class AppViewModel(
                         it.copy(
                             recommendationLoading = false,
                             remoteRecommendationIds = ids,
-                            recommendationSource = "Supabase BQ5 · " + ids.size + " quests",
+                            recommendationSource = when ((remote as? CachedRecommendationRepository)?.lastSource) {
+                                CachedRecommendationRepository.Source.CACHE -> "Smart Picks · cached · " + ids.size + " quests"
+                                CachedRecommendationRepository.Source.STALE_CACHE -> "Smart Picks · saved (offline) · " + ids.size + " quests"
+                                else -> "Supabase BQ5 · " + ids.size + " quests"
+                            },
                             recommendationError = null,
                         )
                     }
@@ -395,6 +624,7 @@ class AppViewModel(
                 }
                 .onFailure { throwable ->
                     if (generation != accountGeneration) return@onFailure
+                    failureReporter.report(AppModule.RECOMMENDATIONS, throwable, null)
                     _uiState.update {
                         it.copy(
                             recommendationLoading = false,
@@ -430,6 +660,17 @@ class AppViewModel(
         } ?: false
         val existingAttemptId = currentState.attemptIdByQuest[questId]
         val createsNewAttempt = existingAttemptId == null || previousAttemptFinished
+        // Offline browsing is supported, but starting a new attempt is still a
+        // server-authoritative operation. Do not create orphaned photos/progress.
+        if (createsNewAttempt && progressRepository != null && !_deviceStatus.value.isOnline) {
+            _uiState.update {
+                it.copy(
+                    progressSyncError = "Connect to the internet before accepting a new quest.",
+                    progressSyncMessage = null,
+                )
+            }
+            return
+        }
         val fromRecommendation = isRecommendationAcceptance(
             questId = questId,
             openedFromSmartPicksId = openedFromSmartPicksId,
@@ -498,12 +739,51 @@ class AppViewModel(
     }
 
     fun toggleDarkMode() {
-        _uiState.update { it.copy(darkMode = !it.darkMode) }
+        // A manual choice overrides the automatic (light sensor) theme.
+        _uiState.update { it.copy(darkMode = !it.darkMode, autoThemeEnabled = false) }
     }
 
     fun setAvailableTime(minutes: Int) {
-        _uiState.update { it.copy(availableTime = minutes, remoteRecommendationIds = emptyList()) }
+        val choice = TimeChoice(timeOfDayFromHour(ZonedDateTime.now().hour), minutes)
+        _uiState.update {
+            it.copy(
+                availableTime = minutes,
+                preferences = it.preferences.copy(typicalTime = minutes),
+                remoteRecommendationIds = emptyList(),
+                timeChoices = (it.timeChoices + choice).takeLast(SmartTimeAdvisor.HISTORY_SIZE),
+                smartTimeHint = null,
+            )
+        }
+        persistSetupPreferences()
         refreshRecommendations()
+    }
+
+    /**
+     * Smart feature: when Explorer opens, preselect the time the user usually picks in this part
+     * of the day. Applied at most once per part of the day per session so it never fights a
+     * choice the user just made.
+     */
+    fun applySmartAvailableTime() {
+        val state = _uiState.value
+        val timeOfDay = timeOfDayFromHour(ZonedDateTime.now().hour)
+        if (state.smartTimeAppliedFor == timeOfDay) return
+        val preferred = SmartTimeAdvisor.preferredMinutes(state.timeChoices, timeOfDay) ?: return
+        _uiState.update { it.copy(smartTimeAppliedFor = timeOfDay) }
+        if (preferred == state.availableTime) return
+
+        val label = if (preferred == 60) "1 hr+" else "$preferred min"
+        _uiState.update {
+            it.copy(
+                availableTime = preferred,
+                remoteRecommendationIds = emptyList(),
+                smartTimeHint = "⚡ Smart pick: you usually have $label in the ${timeOfDay.label().lowercase()}",
+            )
+        }
+        refreshRecommendations()
+        trackEvent("smart_time_applied", metadata = buildJsonObject {
+            put("minutes", preferred)
+            put("time_of_day", timeOfDay.name.lowercase())
+        })
     }
 
     fun setCategory(category: String) {
@@ -549,6 +829,54 @@ class AppViewModel(
         refreshRecommendations()
     }
 
+    private fun recordDifficultyOutcome(outcome: DifficultyOutcome) {
+        val before = difficultySuggestion()
+        _uiState.update {
+            it.copy(difficultyOutcomes = (it.difficultyOutcomes + outcome).takeLast(SmartDifficultyAdvisor.HISTORY_SIZE))
+        }
+        // BQ13 instrumentation: a new adaptive suggestion was shown to the user.
+        val after = difficultySuggestion() ?: return
+        if (after.suggested != before?.suggested) {
+            trackDifficultyEvent("smart_difficulty_suggested", after)
+        }
+    }
+
+    /** BQ13 (Adaptive Quest Optimization): events to compare acceptance/completion with and without adaptation. */
+    private fun trackDifficultyEvent(eventType: String, suggestion: DifficultySuggestion) {
+        val streaks = difficultyStreaks()
+        trackEvent(eventType, metadata = buildJsonObject {
+            put("bq", "BQ13")
+            put("from_difficulty", suggestion.current.name.lowercase())
+            put("to_difficulty", suggestion.suggested.name.lowercase())
+            put("abandon_streak", streaks.abandons)
+            put("completion_streak", streaks.completions)
+        })
+    }
+
+    /** Smart feature: current difficulty suggestion, or null when there is nothing to suggest. */
+    fun difficultySuggestion(): DifficultySuggestion? {
+        val state = _uiState.value
+        if (state.difficultySuggestionDismissedAt == state.difficultyOutcomes.size) return null
+        return SmartDifficultyAdvisor.suggest(state.difficultyOutcomes, state.preferences.difficulty)
+    }
+
+    /** Smart feature: current streaks at the preferred difficulty (shown in Profile). */
+    fun difficultyStreaks(): DifficultyStreaks {
+        val state = _uiState.value
+        return SmartDifficultyAdvisor.streaks(state.difficultyOutcomes, state.preferences.difficulty)
+    }
+
+    fun acceptDifficultySuggestion() {
+        val suggestion = difficultySuggestion() ?: return
+        trackDifficultyEvent("smart_difficulty_accepted", suggestion)
+        setDifficulty(suggestion.suggested)
+    }
+
+    fun dismissDifficultySuggestion() {
+        difficultySuggestion()?.let { trackDifficultyEvent("smart_difficulty_dismissed", it) }
+        _uiState.update { it.copy(difficultySuggestionDismissedAt = it.difficultyOutcomes.size) }
+    }
+
     fun setDifficulty(difficulty: QuestDifficulty) {
         _uiState.update { it.copy(preferences = it.preferences.copy(difficulty = difficulty)) }
         persistSetupPreferences()
@@ -588,6 +916,7 @@ class AppViewModel(
                 remoteRecommendationIds = emptyList(),
             )
         }
+        persistSetupPreferences()
 
         val eventType = when (normalized) {
             "anywhere" -> "location_independent_mode_selected"
@@ -666,6 +995,7 @@ class AppViewModel(
         }
         if (completed) {
             trackEvent("quest_completed", quest)
+            recordDifficultyOutcome(DifficultyOutcome(quest.difficulty, completed = true))
         }
 
         val attemptId = _uiState.value.attemptIdByQuest[questId] ?: return
@@ -849,7 +1179,8 @@ class AppViewModel(
                         },
                     )
                 }
-                .onFailure {
+                .onFailure { uploadError ->
+                    failureReporter.report(AppModule.PHOTO_PROOF, uploadError, null)
                     _uiState.update { state ->
                         val current = state.progressByQuest[questId] ?: QuestProgress()
                         state.copy(
@@ -923,6 +1254,7 @@ class AppViewModel(
         val evidence = buildBq6AbandonmentEvidence(reason, quest, current)
         persistActiveQuestProgress(questId, attemptId, current, closed = true)
 
+        recordDifficultyOutcome(DifficultyOutcome(quest.difficulty, completed = false, reason = reason))
         _uiState.update {
             it.copy(
                 progressByQuest = it.progressByQuest + (
@@ -1085,8 +1417,52 @@ class AppViewModel(
     ) {
         val analytics = analyticsRepository ?: return
         val state = _uiState.value
+        val userId = attachedUserId
+        val store = localStore
+        // Capture the interaction time before asynchronous file I/O begins.
+        val eventOccurredAt = java.time.Instant.now().toString()
 
         viewModelScope.launch {
+            // Recommendation events support BQ9's secondary funnel. Queue them
+            // before delivery so an offline request or process restart cannot
+            // silently discard a shown/accepted/skipped interaction.
+            if (Bq9RecommendationOutbox.supports(eventType) && userId != null && store != null) {
+                try {
+                    withContext(localIoDispatcher) {
+                        Bq9RecommendationOutbox.enqueue(
+                            store = store,
+                            userId = userId,
+                            sessionId = analyticsSessionId,
+                            eventType = eventType,
+                            availableMinutes = state.availableTime,
+                            preferences = state.preferences,
+                            quest = quest,
+                            metadata = metadata,
+                            occurredAt = eventOccurredAt,
+                        )
+                    }
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    // If local storage is unavailable, preserve the previous
+                    // direct-send behavior rather than blocking app navigation.
+                    analytics.track(
+                        sessionId = analyticsSessionId,
+                        eventType = eventType,
+                        availableMinutes = state.availableTime,
+                        preferences = state.preferences,
+                        quest = quest,
+                        metadata = metadata,
+                    )
+                    return@launch
+                }
+                // Once persisted, a scheduler error must not trigger a second
+                // direct send. It will be rescheduled when this account resumes.
+                try {
+                    scheduleLocalSync(userId)
+                } catch (_: Exception) { /* safely retained on disk */ }
+                return@launch
+            }
             analytics.track(
                 sessionId = analyticsSessionId,
                 eventType = eventType,
@@ -1124,6 +1500,7 @@ class AppViewModel(
                     onSuccess?.invoke()
                 }
                 .onFailure { throwable ->
+                    failureReporter.report(AppModule.QUEST_PROGRESS, throwable, null)
                     _uiState.update {
                         it.copy(
                             progressSyncing = false,
@@ -1155,5 +1532,12 @@ class AppViewModel(
                 screen = AppScreen.QuestDetail,
             )
         }
+    }
+
+    private companion object {
+        /** Low battery: reuse the last context for up to 15 minutes before reading GPS again. */
+        const val BATTERY_SAVER_REUSE_MILLIS = 15 * 60 * 1000L
+        const val ADDRESS_OFFLINE_MESSAGE = "Address unavailable offline"
+        const val ADDRESS_UNAVAILABLE_MESSAGE = "Address unavailable right now"
     }
 }

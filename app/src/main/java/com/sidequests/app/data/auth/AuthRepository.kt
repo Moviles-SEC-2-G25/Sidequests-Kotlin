@@ -20,6 +20,9 @@ interface AuthRepository {
     )
 
     suspend fun signOut()
+
+    /** Authentication feature: changes the password of the signed-in user. */
+    suspend fun updatePassword(newPassword: String)
 }
 
 class SupabaseAuthRepository(
@@ -52,5 +55,11 @@ class SupabaseAuthRepository(
 
     override suspend fun signOut() {
         client.auth.signOut()
+    }
+
+    override suspend fun updatePassword(newPassword: String) {
+        client.auth.updateUser {
+            password = newPassword
+        }
     }
 }
