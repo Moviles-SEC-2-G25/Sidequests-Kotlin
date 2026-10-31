@@ -46,6 +46,7 @@ import com.sidequests.app.data.local.StoredPhotoProof
 import com.sidequests.app.data.local.PhotoQuestSnapshot
 import com.sidequests.app.data.photo.photoEvent
 import com.sidequests.app.data.recommendation.RecommendationRepository
+import com.sidequests.app.data.recommendation.CachedRecommendationRepository
 import com.sidequests.app.data.recommendation.SupabaseRecommendationRepository
 import com.sidequests.app.model.AppScreen
 import com.sidequests.app.model.LocationMode
@@ -94,8 +95,10 @@ class AppViewModel(
         if (SupabaseProvider.isConfigured) SupabaseAnalyticsRepository(SupabaseProvider.client)
         else null,
     private val recommendationRepository: RecommendationRepository? =
-        if (SupabaseProvider.isConfigured) SupabaseRecommendationRepository(SupabaseProvider.client)
-        else null,
+        if (SupabaseProvider.isConfigured) {
+            // #23: LRU + TTL cache in front of the Smart Picks RPC.
+            CachedRecommendationRepository(SupabaseRecommendationRepository(SupabaseProvider.client))
+        } else null,
     private val photoProofRepository: PhotoProofRepository? =
         if (SupabaseProvider.isConfigured) {
             SupabasePhotoProofRepository(
@@ -596,7 +599,11 @@ class AppViewModel(
                         it.copy(
                             recommendationLoading = false,
                             remoteRecommendationIds = ids,
-                            recommendationSource = "Supabase BQ5 · " + ids.size + " quests",
+                            recommendationSource = when ((remote as? CachedRecommendationRepository)?.lastSource) {
+                                CachedRecommendationRepository.Source.CACHE -> "Smart Picks · cached · " + ids.size + " quests"
+                                CachedRecommendationRepository.Source.STALE_CACHE -> "Smart Picks · saved (offline) · " + ids.size + " quests"
+                                else -> "Supabase BQ5 · " + ids.size + " quests"
+                            },
                             recommendationError = null,
                         )
                     }
