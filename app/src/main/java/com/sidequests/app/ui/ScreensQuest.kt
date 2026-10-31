@@ -35,6 +35,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -63,7 +64,11 @@ import com.sidequests.app.sensor.camera.CameraPhotoProofService
 import com.sidequests.app.ui.theme.DiscoveryTeal
 import com.sidequests.app.ui.theme.ExplorerIndigo
 import com.sidequests.app.ui.theme.QuestAmber
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.sidequests.app.BuildConfig
 import com.sidequests.app.domain.SmartDifficultyAdvisor
+import com.sidequests.app.telemetry.AppModule
+import com.sidequests.app.telemetry.Bq1Telemetry
 import com.sidequests.app.ui.auth.PasswordChangeState
 import java.io.File
 
@@ -73,6 +78,8 @@ fun QuestDetailScreen(
     viewModel: AppViewModel,
     modifier: Modifier = Modifier,
 ) {
+    val deviceStatus by viewModel.deviceStatus.collectAsStateWithLifecycle()
+    val appState by viewModel.uiState.collectAsStateWithLifecycle()
     LazyColumn(
         modifier = modifier.fillMaxSize().background(MaterialTheme.colorScheme.background),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 20.dp, vertical = 18.dp),
@@ -146,10 +153,21 @@ fun QuestDetailScreen(
             }
         }
         item {
-            PrimaryButton(
-                text = if (quest.isGroup) "Join group quest →" else "Accept this quest →",
-                onClick = { viewModel.acceptQuest(quest.id) },
-            )
+            if (!deviceStatus.isOnline) {
+                Text(
+                    "You're offline. You can browse this quest, but accepting it requires internet.",
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            } else {
+                PrimaryButton(
+                    text = if (quest.isGroup) "Join group quest →" else "Accept this quest →",
+                    onClick = { viewModel.acceptQuest(quest.id) },
+                )
+                appState.progressSyncError?.let { error ->
+                    Text(error, color = MaterialTheme.colorScheme.error)
+                }
+            }
         }
     }
 }
@@ -762,6 +780,9 @@ fun ProfileScreen(
                 }
             }
         }
+        if (BuildConfig.DEBUG) {
+            item { Bq1DebugCard() }
+        }
         item {
             PrimaryButton(
                 text = "Sign out",
@@ -834,4 +855,36 @@ private fun ChangePasswordDialog(
             }
         },
     )
+}
+
+/** Debug builds only: lets the team verify BQ1 telemetry without waiting 10 minutes. */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun Bq1DebugCard() {
+    val pending by Bq1Telemetry.pendingCount.collectAsStateWithLifecycle()
+    val lastResume by Bq1Telemetry.lastResume.collectAsStateWithLifecycle()
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("BQ1 TELEMETRY (DEBUG)", fontSize = 10.sp, fontWeight = FontWeight.Black, color = MaterialTheme.colorScheme.onSurface.copy(alpha = .5f))
+        Text("Events waiting to upload: $pending", fontSize = 12.sp)
+        Text(
+            lastResume?.let { "Last long resume: ${it.backgroundMillis / 60_000} min in background · quest ${it.questId}" }
+                ?: "No resume after >10 min yet",
+            fontSize = 12.sp,
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = .6f),
+        )
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            ChoiceChip(text = "Simulate 11-min resume", selected = false, onClick = { Bq1Telemetry.simulateLongResume() })
+            ChoiceChip(
+                text = "Simulate geocoding failure",
+                selected = false,
+                onClick = { Bq1Telemetry.report(AppModule.GEOCODING, IllegalStateException("Simulated geocoding failure"), null) },
+            )
+            ChoiceChip(
+                text = "Simulate crash",
+                selected = false,
+                onClick = { throw IllegalStateException("Simulated BQ1 crash from Profile") },
+                selectedColor = MaterialTheme.colorScheme.error,
+            )
+        }
+    }
 }
