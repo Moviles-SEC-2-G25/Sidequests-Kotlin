@@ -16,6 +16,7 @@ enum class WeatherCondition {
 data class WeatherData(
     val temperatureCelsius: Double,
     val condition: WeatherCondition,
+    val isStale: Boolean = false,
 )
 
 enum class TimeOfDay { MORNING, AFTERNOON, EVENING, NIGHT }
