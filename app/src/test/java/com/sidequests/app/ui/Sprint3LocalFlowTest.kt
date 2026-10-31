@@ -179,4 +179,59 @@ class Sprint3LocalFlowTest {
         assertEquals(1, store().read().events.count { it.eventType == "onboarding_started" })
         assertEquals(1, store().read().events.count { it.eventType == "onboarding_resumed" })
     }
+
+    @Test fun `active quest without photo proofs survives view model recreation`() = runTest {
+        val vm = vm()
+        vm.attachAccount("alice")
+        scheduled.receive()
+        vm.skipOnboarding()
+        scheduled.receive()
+        vm.acceptQuest("botanical-garden")
+        advanceUntilIdle()
+        vm.completeCurrentStep()
+        advanceUntilIdle()
+        vm.jumpToStep(2)
+        advanceUntilIdle()
+
+        val saved = store().read().photoQuests.values.single()
+        assertEquals("alice", saved.userId)
+        assertEquals("botanical-garden", saved.questId)
+        assertEquals(2, saved.currentStep)
+        assertEquals(setOf(0), saved.completedSteps)
+        assertTrue(!saved.closed)
+        assertTrue(store().read().photos.isEmpty())
+
+        models.clear()
+        val restored = vm()
+        restored.attachAccount("alice")
+        restored.uiState.first {
+            it.accountUserId == "alice" && it.attemptIdByQuest.containsKey("botanical-garden")
+        }
+
+        assertEquals(saved.attemptId, restored.uiState.value.attemptIdByQuest["botanical-garden"])
+        assertEquals(2, restored.activeProgress().currentStep)
+        assertEquals(setOf(0), restored.activeProgress().completedSteps)
+        assertEquals(AppScreen.ActiveQuest, restored.uiState.value.screen)
+        assertTrue(restored.hasActiveQuest())
+    }
+
+    @Test fun `active quest snapshots are isolated between accounts`() = runTest {
+        val vm = vm()
+        vm.attachAccount("alice")
+        scheduled.receive()
+        vm.skipOnboarding()
+        scheduled.receive()
+        vm.acceptQuest("botanical-garden")
+        advanceUntilIdle()
+        vm.jumpToStep(3)
+        advanceUntilIdle()
+        vm.detachAccount()
+        vm.attachAccount("bob")
+        vm.uiState.first { it.accountUserId == "bob" }
+
+        assertFalse(vm.hasActiveQuest())
+        assertTrue(vm.activeProgress().completedSteps.isEmpty())
+        assertEquals("alice", store().read().photoQuests.values.single().userId)
+    }
+
 }

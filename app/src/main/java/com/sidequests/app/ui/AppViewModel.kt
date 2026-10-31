@@ -264,6 +264,7 @@ class AppViewModel(
                         attemptIdByQuest = open.associate { it.questId to it.attemptId },
                         progressByQuest = open.associate { it.questId to QuestProgress(currentStep = it.currentStep, completedSteps = it.completedSteps) },
                         activeQuestId = open.last().questId,
+                        screen = if (repository.questById(open.last().questId).isGroup) AppScreen.GroupQuest else AppScreen.ActiveQuest,
                     ) }
                 }
                 applyStoredPhotos(saved, userId)
@@ -340,7 +341,7 @@ class AppViewModel(
         updateJourney({ it.savePreferences(preferences) }, schedule = false)
     }
 
-    private fun persistPhotoProgress(questId: String, attemptId: String, progress: QuestProgress, closed: Boolean = false) {
+    private fun persistActiveQuestProgress(questId: String, attemptId: String, progress: QuestProgress, closed: Boolean = false) {
         val store = localStore ?: return
         val userId = attachedUserId ?: return
         viewModelScope.launch {
@@ -348,13 +349,12 @@ class AppViewModel(
                 photoMutex.withLock {
                     withContext(localIoDispatcher) {
                         store.update { saved ->
-                            if (saved.photos.none { it.attemptId == attemptId && it.userId == userId }) saved
-                            else saved.copy(photoQuests = saved.photoQuests + (attemptId to PhotoQuestSnapshot(userId, questId, attemptId, progress.currentStep, progress.completedSteps, closed)))
+                            saved.copy(photoQuests = saved.photoQuests + (attemptId to PhotoQuestSnapshot(userId, questId, attemptId, progress.currentStep, progress.completedSteps, closed)))
                         }
                     }
                 }
             } catch (cancelled: CancellationException) { throw cancelled }
-              catch (_: Exception) { _uiState.update { it.copy(localStateError = "Photo progress could not be saved on this device. Please try again.") } }
+              catch (_: Exception) { _uiState.update { it.copy(localStateError = "Quest progress could not be saved on this device. Please try again.") } }
         }
     }
 
@@ -704,6 +704,9 @@ class AppViewModel(
             )
         }
 
+        val acceptedProgress = _uiState.value.progressByQuest[questId] ?: QuestProgress()
+        persistActiveQuestProgress(questId, attemptId, acceptedProgress)
+
         if (createsNewAttempt) {
             updateJourney({ it.firstRecommendationAccepted(questId, firstOnboardingRecommendationSource, attemptId) })
             // BQ9 must reflect a quest acceptance confirmed by Supabase, not
@@ -996,7 +999,7 @@ class AppViewModel(
         }
 
         val attemptId = _uiState.value.attemptIdByQuest[questId] ?: return
-        persistPhotoProgress(questId, attemptId, _uiState.value.progressByQuest.getValue(questId), closed = completed)
+        persistActiveQuestProgress(questId, attemptId, _uiState.value.progressByQuest.getValue(questId), closed = completed)
         syncProgress(if (completed) "Saving completed quest…" else "Saving progress…") {
             progressRepository?.updateProgress(
                 attemptId = attemptId,
@@ -1011,8 +1014,12 @@ class AppViewModel(
         val state = _uiState.value
         val questId = state.activeQuestId
         val current = state.progressByQuest[questId] ?: QuestProgress()
+        val updated = current.copy(currentStep = step.coerceIn(0, 3))
         _uiState.update {
-            it.copy(progressByQuest = it.progressByQuest + (questId to current.copy(currentStep = step.coerceIn(0, 3))))
+            it.copy(progressByQuest = it.progressByQuest + (questId to updated))
+        }
+        state.attemptIdByQuest[questId]?.let { attemptId ->
+            persistActiveQuestProgress(questId, attemptId, updated)
         }
     }
 
@@ -1226,7 +1233,7 @@ class AppViewModel(
         )
 
         val attemptId = state.attemptIdByQuest[questId] ?: return
-        persistPhotoProgress(questId, attemptId, current)
+        persistActiveQuestProgress(questId, attemptId, current)
         syncProgress("Saving quest progress…") {
             progressRepository?.saveProgress(
                 attemptId = attemptId,
@@ -1245,7 +1252,7 @@ class AppViewModel(
         val attemptId = state.attemptIdByQuest[questId] ?: return
         if (current.abandoned || current.completedSteps.size >= quest.steps.size) return
         val evidence = buildBq6AbandonmentEvidence(reason, quest, current)
-        persistPhotoProgress(questId, attemptId, current, closed = true)
+        persistActiveQuestProgress(questId, attemptId, current, closed = true)
 
         recordDifficultyOutcome(DifficultyOutcome(quest.difficulty, completed = false, reason = reason))
         _uiState.update {
@@ -1388,6 +1395,12 @@ class AppViewModel(
         }
 
         val attemptId = state.attemptIdByQuest[questId] ?: return
+        persistActiveQuestProgress(
+            questId = questId,
+            attemptId = attemptId,
+            progress = state.progressByQuest[questId] ?: QuestProgress(),
+            closed = true,
+        )
         syncProgress("Saving rating…") {
             progressRepository?.rateQuest(
                 attemptId = attemptId,
