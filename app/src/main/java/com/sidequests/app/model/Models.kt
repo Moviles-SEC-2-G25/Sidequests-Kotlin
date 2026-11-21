@@ -78,6 +78,10 @@ enum class AppScreen {
     Rating,
     GroupQuest,
     Profile,
+    InstantPlan,
+    GroupDiscovery,
+    VarietyDiscovery,
+    SocialComfort,
 }
 
 data class SidequestsUiState(
@@ -111,6 +115,7 @@ data class SidequestsUiState(
     val recommendationError: String? = null,
     val recommendationSource: String = "Local fallback",
     val remoteRecommendationIds: List<String> = emptyList(),
+    val sprint4PinnedQuestId: String? = null,
     val notificationQuestId: String? = null,
     val contextualNotificationShown: Boolean = false,
     val questAlternatives: QuestAlternativesState? = null,
