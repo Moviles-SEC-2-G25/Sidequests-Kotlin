@@ -10,6 +10,12 @@ import com.sidequests.app.model.UserPreferences
  * A cached catalogue may be used, but the UI must label its source.
  */
 object Sprint4Discovery {
+    /** Stable per-account experimental assignment, kept constant on subsequent app launches. */
+    fun socialVariant(userId: String?): String {
+        if (userId.isNullOrBlank()) return "control"
+        return if (Math.floorMod(userId.hashCode(), 2) == 0) "control" else "personalized"
+    }
+
     fun eligible(
         catalogue: List<Quest>,
         availableMinutes: Int,
