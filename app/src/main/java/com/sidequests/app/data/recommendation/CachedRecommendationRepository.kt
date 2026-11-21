@@ -23,6 +23,7 @@ class CachedRecommendationRepository(
 ) : RecommendationRepository {
 
     private data class Key(
+        val accountScope: String,
         val availableMinutes: Int,
         val socialLevel: String,
         val interests: List<String>,
@@ -32,6 +33,15 @@ class CachedRecommendationRepository(
     )
 
     private class Entry(val results: List<RecommendationResult>, val storedAtMillis: Long)
+
+    /** The server arm is assigned by authenticated user, so cached responses must be
+     * separated by user. Switching accounts cannot replay another person's arm.
+     */
+    @Volatile private var accountScope: String = "no-account"
+
+    fun useAccountScope(userId: String?) {
+        accountScope = userId ?: "no-account"
+    }
 
     private val mutex = Mutex()
     private val entries = object : LinkedHashMap<Key, Entry>(16, 0.75f, true) {
@@ -56,6 +66,7 @@ class CachedRecommendationRepository(
         limit: Int,
     ): Result<List<RecommendationResult>> {
         val key = Key(
+            accountScope = accountScope,
             availableMinutes = availableMinutes,
             socialLevel = preferences.socialLevel.name,
             interests = preferences.interests.sorted(),
