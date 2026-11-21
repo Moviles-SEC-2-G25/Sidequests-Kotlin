@@ -22,6 +22,7 @@ internal object Bq9RecommendationOutbox {
         "recommendation_shown",
         "recommendation_accepted",
         "recommendation_skipped",
+        "quest_accepted", // BQ4/BQ14 require confirmed accepted attempts even after reconnecting.
         // Reuse the durable per-account WorkManager queue for new Sprint 4 interactions.
         "s4_discovery_shown",
         "s4_discovery_selected",
