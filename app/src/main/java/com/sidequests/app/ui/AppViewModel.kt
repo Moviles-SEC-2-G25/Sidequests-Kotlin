@@ -40,6 +40,8 @@ import com.sidequests.app.data.photo.PhotoProofRepository
 import com.sidequests.app.data.photo.SupabasePhotoProofRepository
 import com.sidequests.app.data.analytics.OnboardingRecorder
 import com.sidequests.app.data.local.LexLocalStore
+import com.sidequests.app.data.local.Sprint4PlanStore
+import com.sidequests.app.domain.Sprint4Discovery
 import com.sidequests.app.data.local.LexLocalState
 import com.sidequests.app.data.local.OnboardingJourney
 import com.sidequests.app.data.local.StoredPhotoProof
@@ -117,6 +119,8 @@ class AppViewModel(
     private val settingsStore: SettingsStore? = null,
     /** BQ1 (#22): non-fatal module failures are reported here (no-op by default/in tests). */
     private val failureReporter: FailureReporter = FailureReporter.NONE,
+    /** New S4 local-first saved-plan storage; optional in unit tests. */
+    private val sprint4PlanStore: Sprint4PlanStore? = null,
 ) : ViewModel() {
 
     private val analyticsSessionId = UUID.randomUUID().toString()
@@ -124,6 +128,11 @@ class AppViewModel(
     private val alternativeRecommender = QuestAlternativeRecommender()
     private var alternativeJob: Job? = null
     private var openedFromSmartPicksId: String? = null
+    private var sprint4FlowStartedAtMillis = android.os.SystemClock.elapsedRealtime()
+    private var sprint4FlowInteractions = 0
+    private var sprint4StartPath = "standard"
+    private var sprint4DiscoverySource: String? = null
+    private var sprint4ComfortAtSelection: SocialLevel? = null
     private var attachedUserId: String? = null
     private var accountGeneration = 0
     private var photoObserver: Job? = null
@@ -238,6 +247,9 @@ class AppViewModel(
         historyOwner = null
         attachedUserId = userId
         accountGeneration += 1
+        sprint4LoadPinned(userId)
+        sprint4FlowStartedAtMillis = android.os.SystemClock.elapsedRealtime()
+        sprint4FlowInteractions = 0
         photoObserver?.cancel()
         _uiState.value = freshAccountState()
         restoreHistory(userId)
@@ -483,6 +495,107 @@ class AppViewModel(
 
     fun allQuests(): List<Quest> = repository.allQuests()
 
+    /** Load the plan independently of the remote catalogue so opening the screen never waits for network I/O. */
+    private fun sprint4LoadPinned(userId: String) {
+        val store = sprint4PlanStore ?: return
+        viewModelScope.launch {
+            val saved = runCatching { store.read(userId) }.getOrNull()
+            if (attachedUserId == userId) {
+                _uiState.update { it.copy(sprint4PinnedQuestId = saved) }
+            }
+        }
+    }
+
+    fun sprint4Pin(questId: String?) {
+        val userId = attachedUserId ?: return
+        if (questId != null && repository.allQuests().none { it.id == questId }) return
+        val store = sprint4PlanStore ?: return
+        viewModelScope.launch {
+            val outcome = runCatching { store.write(userId, questId) }
+            if (attachedUserId != userId) return@launch
+            outcome.onSuccess {
+                _uiState.update { it.copy(sprint4PinnedQuestId = questId, progressSyncError = null) }
+            }.onFailure {
+                _uiState.update { it.copy(progressSyncError = "Could not save this plan on your device.") }
+            }
+        }
+    }
+
+    private fun sprint4ExcludedIds(): Set<String> {
+        val state = _uiState.value
+        val finished = state.progressByQuest.filter { (id, progress) ->
+            val quest = repository.allQuests().firstOrNull { it.id == id }
+            quest != null && progress.completedSteps.size >= quest.steps.size
+        }.keys
+        return state.skippedQuestIds + state.attemptIdByQuest.keys + finished
+    }
+
+    fun sprint4InstantPlan(): Quest? {
+        val state = _uiState.value
+        val eligible = Sprint4Discovery.eligible(
+            repository.allQuests(), state.availableTime, state.preferences.budgetMax, sprint4ExcludedIds(),
+        )
+        val saved = eligible.firstOrNull { it.id == state.sprint4PinnedQuestId }
+        return saved ?: Sprint4Discovery.instantPlan(
+            repository.allQuests(), state.preferences, state.availableTime, sprint4ExcludedIds(),
+        )
+    }
+
+    fun sprint4GroupOptions(): List<Quest> {
+        val state = _uiState.value
+        return Sprint4Discovery.groupOptions(
+            repository.allQuests(), state.preferences, state.availableTime, sprint4ExcludedIds(),
+        )
+    }
+
+    fun sprint4DiverseOptions(): List<Quest> {
+        val state = _uiState.value
+        return Sprint4Discovery.diverseOptions(
+            repository.allQuests(), state.preferences, state.availableTime, sprint4ExcludedIds(),
+        )
+    }
+
+    fun sprint4ComfortOptions(level: SocialLevel): List<Quest> {
+        val state = _uiState.value
+        return Sprint4Discovery.comfortOptions(
+            repository.allQuests(), state.preferences, state.availableTime, level, sprint4ExcludedIds(),
+        )
+    }
+
+    /** Analytics evidence for opt-in discovery; exposures are not automatically counted as accepts. */
+    fun sprint4RecordShown(source: String, quests: List<Quest>, comfort: SocialLevel? = null) {
+        if (source !in setOf("variety", "social_comfort")) return
+        quests.forEach { quest ->
+            trackEvent("s4_discovery_shown", quest, buildJsonObject {
+                put("s4_source", source)
+                comfort?.let { put("comfort_level", it.name.lowercase()) }
+            })
+        }
+    }
+
+    fun sprint4OpenDetail(questId: String, source: String, comfort: SocialLevel? = null) {
+        if (source !in setOf("group", "variety", "social_comfort")) return
+        if (repository.allQuests().none { it.id == questId }) return
+        val quest = repository.questById(questId)
+        openQuestDetail(questId)
+        sprint4DiscoverySource = source
+        sprint4ComfortAtSelection = comfort
+        trackEvent("s4_discovery_selected", quest, buildJsonObject {
+            put("s4_source", source)
+            comfort?.let { put("comfort_level", it.name.lowercase()) }
+        })
+    }
+
+    /** BQ4: direct acceptance of a feasible plan without the separate detail step. */
+    fun sprint4StartInstant(questId: String) {
+        if (sprint4InstantPlan()?.id != questId) return
+        sprint4StartPath = "instant_plan"
+        sprint4DiscoverySource = "instant_plan"
+        sprint4FlowInteractions += 1
+        acceptQuest(questId)
+    }
+
+
     fun selectedQuest(): Quest = repository.questById(_uiState.value.selectedQuestId)
 
     fun activeQuest(): Quest = repository.questById(_uiState.value.activeQuestId)
@@ -637,6 +750,15 @@ class AppViewModel(
         }
     }
     fun navigate(screen: AppScreen) {
+        if (screen == AppScreen.Explorer) {
+            sprint4FlowStartedAtMillis = android.os.SystemClock.elapsedRealtime()
+            sprint4FlowInteractions = 0
+            sprint4StartPath = "standard"
+            sprint4DiscoverySource = null
+            sprint4ComfortAtSelection = null
+        } else if (screen in setOf(AppScreen.InstantPlan, AppScreen.GroupDiscovery, AppScreen.VarietyDiscovery, AppScreen.SocialComfort)) {
+            sprint4FlowInteractions += 1
+        }
         if (screen != AppScreen.QuestAlternatives) alternativeJob?.cancel()
         if (screen != AppScreen.QuestDetail) openedFromSmartPicksId = null
         _uiState.update {
@@ -647,6 +769,10 @@ class AppViewModel(
     fun openQuestDetail(questId: String, fromSmartPicks: Boolean = false) {
         alternativeJob?.cancel()
         openedFromSmartPicksId = if (fromSmartPicks) questId else null
+        sprint4FlowInteractions += 1
+        sprint4StartPath = "standard"
+        sprint4DiscoverySource = null
+        sprint4ComfortAtSelection = null
         _uiState.update { it.copy(selectedQuestId = questId, screen = AppScreen.QuestDetail, questAlternatives = null) }
     }
 
@@ -708,16 +834,27 @@ class AppViewModel(
         persistActiveQuestProgress(questId, attemptId, acceptedProgress)
 
         if (createsNewAttempt) {
+            // BQ4 clock starts at the Explore entry point, for both standard and instant paths.
+            val secondsToStart = ((android.os.SystemClock.elapsedRealtime() -
+                sprint4FlowStartedAtMillis).coerceAtLeast(0L) / 1000.0)
+            val s4Metadata = buildJsonObject {
+                put("start_path", sprint4StartPath)
+                put("seconds_to_start", secondsToStart)
+                put("interactions_to_start", sprint4FlowInteractions.coerceAtLeast(1))
+                put("discovery_source", sprint4DiscoverySource ?: "explore")
+                sprint4ComfortAtSelection?.let { put("comfort_level", it.name.lowercase()) }
+            }
             updateJourney({ it.firstRecommendationAccepted(questId, firstOnboardingRecommendationSource, attemptId) })
             // BQ9 must reflect a quest acceptance confirmed by Supabase, not
             // just an attempted tap while offline or after a server rejection.
             syncProgress(
                 message = "Saving accepted quest…",
                 onSuccess = {
-                    trackEvent("quest_accepted", quest)
+                    trackEvent("quest_accepted", quest, s4Metadata)
                     if (fromRecommendation) {
-                        trackEvent("recommendation_accepted", quest)
+                        trackEvent("recommendation_accepted", quest, s4Metadata)
                     }
+                    trackEvent("s4_start_confirmed", quest, s4Metadata)
                 },
             ) {
                 progressRepository?.acceptQuest(questId, attemptId)
