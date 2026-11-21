@@ -6,6 +6,9 @@ import com.sidequests.app.context.LocationData
 import com.sidequests.app.context.LocationProvider
 import com.sidequests.app.context.MockWeatherProvider
 import com.sidequests.app.data.InMemorySidequestsRepository
+import com.sidequests.app.data.analytics.AnalyticsRepository
+import com.sidequests.app.model.Quest
+import kotlinx.serialization.json.JsonObject
 import com.sidequests.app.data.local.LexLocalStore
 import com.sidequests.app.data.recommendation.RecommendationRepository
 import com.sidequests.app.data.recommendation.RecommendationResult
@@ -63,6 +66,16 @@ class Bq8ViewportExposureFlowTest {
             ): Result<List<RecommendationResult>> = Result.success(response)
         }
         val store = LexLocalStore(File(folder.root, "bq8-outbox.json"))
+        val analytics = object : AnalyticsRepository {
+            override suspend fun track(
+                sessionId: String,
+                eventType: String,
+                availableMinutes: Int,
+                preferences: UserPreferences,
+                quest: Quest?,
+                metadata: JsonObject,
+            ): Result<Unit> = Result.failure(IllegalStateException("Do not send directly in this test"))
+        }
         val location = object : LocationProvider {
             override suspend fun getCurrentLocation(): LocationData? = null
         }
@@ -70,7 +83,7 @@ class Bq8ViewportExposureFlowTest {
             contextManager = ContextManager(location, MockWeatherProvider()),
             repository = catalogue,
             progressRepository = null,
-            analyticsRepository = null,
+            analyticsRepository = analytics,
             recommendationRepository = remote,
             photoProofRepository = null,
             localStore = store,
