@@ -259,7 +259,7 @@ fun ExplorerScreen(
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("DISCOVER MORE", style = MaterialTheme.typography.labelMedium)
                     Text("Discover a new category in three suggestions", style = MaterialTheme.typography.bodySmall)
-                    PrimaryButton("Try variety") { viewModel.navigate(com.sidequests.app.model.AppScreen.VarietyDiscovery) }
+                    PrimaryButton("Try variety", onClick = { viewModel.navigate(com.sidequests.app.model.AppScreen.VarietyDiscovery) })
                 }
             }
         }
