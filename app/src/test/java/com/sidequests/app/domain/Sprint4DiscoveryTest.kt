@@ -75,6 +75,13 @@ class Sprint4DiscoveryTest {
         assertTrue(Sprint4Discovery.diverseOptions(all, UserPreferences(), 30, limit = 0).isEmpty())
     }
 
+    @Test fun socialExperimentArmIsStablePerAccount() {
+        val a = Sprint4Discovery.socialVariant("sample-account-001")
+        assertTrue(a == "control" || a == "personalized")
+        assertEquals(a, Sprint4Discovery.socialVariant("sample-account-001"))
+        assertEquals("control", Sprint4Discovery.socialVariant(null))
+    }
+
     @Test fun socialComfortDoesNotMutateStoredProfile() {
         val prefs = UserPreferences(socialLevel = SocialLevel.Group)
         val all = listOf(quest("solo", "Art"), quest("social", "Art", social = SocialLevel.Social),
