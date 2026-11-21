@@ -721,17 +721,30 @@ class AppViewModel(
                         )
                     }
 
-                    val contextSnapshot = _contextState.value.context
-                    ids.forEachIndexed { index, id ->
-                        repository.allQuests().firstOrNull { it.id == id }?.let { quest ->
-                            trackEvent(
-                                eventType = "recommendation_shown",
-                                quest = quest,
-                                metadata = buildRecommendationContextMetadata(
+                    // BQ8: one impression batch per fresh RPC response. Cached responses must not
+                    // create additional impressions or distort the server-side experiment.
+                    val source = (remote as? CachedRecommendationRepository)?.lastSource
+                    if (source == null || source == CachedRecommendationRepository.Source.NETWORK) {
+                        val batchId = UUID.randomUUID().toString()
+                        val contextSnapshot = _contextState.value.context
+                        results.forEachIndexed { index, result ->
+                            repository.allQuests().firstOrNull { it.id == result.questId }?.let { quest ->
+                                val contextMetadata = buildRecommendationContextMetadata(
                                     context = contextSnapshot,
                                     rank = index + 1,
-                                ),
-                            )
+                                )
+                                trackEvent(
+                                    eventType = "recommendation_shown",
+                                    quest = quest,
+                                    metadata = buildJsonObject {
+                                        contextMetadata.forEach { (key, value) -> put(key, value) }
+                                        put("batch_id", batchId)
+                                        put("rank", result.rankPosition ?: index + 1)
+                                        result.variant?.let { put("variant", it) }
+                                        result.category?.let { put("category", it) }
+                                    },
+                                )
+                            }
                         }
                     }
                 }
