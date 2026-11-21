@@ -6,6 +6,7 @@ import com.sidequests.app.data.LocalQuestCatalogueStore
 import com.sidequests.app.data.SupabaseSidequestsRepository
 import com.sidequests.app.data.InMemorySidequestsRepository
 import com.sidequests.app.data.local.LexSyncWorker
+import com.sidequests.app.data.local.SharedPreferencesSprint4PlanStore
 import com.sidequests.app.data.remote.SupabaseProvider
 import java.io.File
 import androidx.lifecycle.ViewModelProvider
@@ -45,6 +46,7 @@ class AppViewModelFactory(
             addressProvider = addressProvider,
             settingsStore = settingsStore,
             failureReporter = failureReporter,
+            sprint4PlanStore = SharedPreferencesSprint4PlanStore(applicationContext),
         ) as T
     }
 }
