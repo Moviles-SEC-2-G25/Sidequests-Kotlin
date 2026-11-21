@@ -46,6 +46,7 @@ import com.sidequests.app.data.local.StoredPhotoProof
 import com.sidequests.app.data.local.PhotoQuestSnapshot
 import com.sidequests.app.data.photo.photoEvent
 import com.sidequests.app.data.recommendation.RecommendationRepository
+import com.sidequests.app.domain.VarietyDiscovery
 import com.sidequests.app.domain.Bq8RecommendationPresentation
 import com.sidequests.app.data.recommendation.CachedRecommendationRepository
 import com.sidequests.app.data.recommendation.SupabaseRecommendationRepository
@@ -488,6 +489,17 @@ class AppViewModel(
     val categories: List<String> get() = repository.categories()
 
     fun allQuests(): List<Quest> = repository.allQuests()
+
+    fun varietyOptions(): List<Quest> {
+        val state = _uiState.value
+        // No new analytics impression: BQ8 server exposures are tracked in Smart Picks only.
+        return VarietyDiscovery.select(
+            catalogue = repository.allQuests(),
+            availableMinutes = state.availableTime,
+            maxBudget = state.preferences.budgetMax,
+            excludedIds = state.skippedQuestIds + state.attemptIdByQuest.keys,
+        )
+    }
 
     fun selectedQuest(): Quest = repository.questById(_uiState.value.selectedQuestId)
 
