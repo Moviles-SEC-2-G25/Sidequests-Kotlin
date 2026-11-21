@@ -58,6 +58,9 @@ class MainActivity : ComponentActivity() {
         ambientLightMonitor = AmbientLightMonitor(applicationContext)
         appViewModel.setLightSensorAvailable(ambientLightMonitor.isAvailable)
 
+        // Sprint 4: register lifecycle-aware collectors once. Duplicating this block
+        // allocates redundant monitors and coroutines, and can dispatch stale state.
+        // Measure actual cost separately; this correctness fix is not a profiler result.
         // Forward connectivity/battery and ambient light changes only while the screen is visible.
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
@@ -71,22 +74,7 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        deviceStatusMonitor = DeviceStatusMonitor(applicationContext)
-        ambientLightMonitor = AmbientLightMonitor(applicationContext)
-        appViewModel.setLightSensorAvailable(ambientLightMonitor.isAvailable)
 
-        // Forward connectivity/battery and ambient light changes only while the screen is visible.
-        lifecycleScope.launch {
-            repeatOnLifecycle(Lifecycle.State.STARTED) {
-                launch { deviceStatusMonitor.status.collect { appViewModel.onDeviceStatusChanged(it) } }
-                launch { ambientLightMonitor.lux.collect { lux -> if (lux != null) appViewModel.onAmbientLux(lux) } }
-                launch {
-                    ambientLightMonitor.isDark.collect { isDark ->
-                        if (isDark != null) appViewModel.onAmbientLightChanged(isDark)
-                    }
-                }
-            }
-        }
 
         setContent {
             SidequestsApp(appViewModel = appViewModel)
