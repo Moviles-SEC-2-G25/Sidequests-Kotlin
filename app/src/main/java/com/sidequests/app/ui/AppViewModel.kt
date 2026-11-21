@@ -236,6 +236,7 @@ class AppViewModel(
     }
 
     fun detachAccount() {
+        (recommendationRepository as? CachedRecommendationRepository)?.useAccountScope(null)
         historyOwner = null
         attachedUserId = null
         accountGeneration += 1
@@ -247,6 +248,8 @@ class AppViewModel(
     fun attachAccount(userId: String) {
         if (attachedUserId == userId && _uiState.value.accountUserId == userId && _uiState.value.localStateError == null) return
         historyOwner = null
+        // BQ8: assigned experiment arms and cached results must never cross accounts.
+        (recommendationRepository as? CachedRecommendationRepository)?.useAccountScope(userId)
         attachedUserId = userId
         accountGeneration += 1
         sprint4LoadPinned(userId)
