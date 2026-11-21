@@ -128,7 +128,7 @@ class AppViewModel(
     private val alternativeRecommender = QuestAlternativeRecommender()
     private var alternativeJob: Job? = null
     private var openedFromSmartPicksId: String? = null
-    private var sprint4FlowStartedAtMillis = android.os.SystemClock.elapsedRealtime()
+    private var sprint4FlowStartedAtMillis = (System.nanoTime() / 1_000_000L)
     private var sprint4FlowInteractions = 0
     private var sprint4StartPath = "standard"
     private var sprint4DiscoverySource: String? = null
@@ -248,7 +248,7 @@ class AppViewModel(
         attachedUserId = userId
         accountGeneration += 1
         sprint4LoadPinned(userId)
-        sprint4FlowStartedAtMillis = android.os.SystemClock.elapsedRealtime()
+        sprint4FlowStartedAtMillis = (System.nanoTime() / 1_000_000L)
         sprint4FlowInteractions = 0
         photoObserver?.cancel()
         _uiState.value = freshAccountState()
@@ -764,7 +764,7 @@ class AppViewModel(
     }
     fun navigate(screen: AppScreen) {
         if (screen == AppScreen.Explorer) {
-            sprint4FlowStartedAtMillis = android.os.SystemClock.elapsedRealtime()
+            sprint4FlowStartedAtMillis = (System.nanoTime() / 1_000_000L)
             sprint4FlowInteractions = 0
             sprint4StartPath = "standard"
             sprint4DiscoverySource = null
@@ -848,13 +848,14 @@ class AppViewModel(
 
         if (createsNewAttempt) {
             // BQ4 clock starts at the Explore entry point, for both standard and instant paths.
-            val secondsToStart = ((android.os.SystemClock.elapsedRealtime() -
+            val secondsToStart = (((System.nanoTime() / 1_000_000L) -
                 sprint4FlowStartedAtMillis).coerceAtLeast(0L) / 1000.0)
             val s4Metadata = buildJsonObject {
                 put("start_path", sprint4StartPath)
                 put("seconds_to_start", secondsToStart)
                 put("interactions_to_start", sprint4FlowInteractions.coerceAtLeast(1))
                 put("discovery_source", sprint4DiscoverySource ?: "explore")
+                put("attempt_id", attemptId)
                 sprint4ComfortAtSelection?.let { put("comfort_level", it.name.lowercase()) }
             }
             updateJourney({ it.firstRecommendationAccepted(questId, firstOnboardingRecommendationSource, attemptId) })
