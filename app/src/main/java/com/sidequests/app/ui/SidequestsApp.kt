@@ -168,6 +168,8 @@ private fun AuthenticatedSidequestsContent(
                         onRequestLocation = onRequestLocation,
                     )
 
+                    AppScreen.VarietyDiscovery -> VarietyScreen(state, viewModel)
+
                     AppScreen.QuestDetail -> QuestDetailScreen(
                         viewModel.selectedQuest(),
                         viewModel,
