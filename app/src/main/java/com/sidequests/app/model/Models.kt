@@ -115,6 +115,12 @@ data class SidequestsUiState(
     val recommendationError: String? = null,
     val recommendationSource: String = "Local fallback",
     val remoteRecommendationIds: List<String> = emptyList(),
+    /** BQ8: non-null only for a new RPC response, not a cache hit/replay. */
+    val bq8FreshBatchId: String? = null,
+    /** Arm assigned by the shared server RPC; may be absent for older deployments. */
+    val bq8Variant: String? = null,
+    /** Server rank for each recommended quest, immutable within an RPC batch. */
+    val bq8RankByQuestId: Map<String, Int> = emptyMap(),
     val sprint4PinnedQuestId: String? = null,
     val notificationQuestId: String? = null,
     val contextualNotificationShown: Boolean = false,
