@@ -72,6 +72,7 @@ enum class AppScreen {
     Onboarding,
     Explorer,
     QuestDetail,
+    VarietyDiscovery,
     ActiveQuest,
     ExitFlow,
     QuestAlternatives,
