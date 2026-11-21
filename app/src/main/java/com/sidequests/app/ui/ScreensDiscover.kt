@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -29,6 +30,8 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.snapshotFlow
+import kotlinx.coroutines.flow.collect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -246,7 +249,25 @@ fun ExplorerScreen(
             it.id !in state.skippedQuestIds
     }
 
+    val explorerListState = rememberLazyListState()
+    // Do not count a recommendation as an impression just because the RPC returned.
+    // LazyColumn may precompose offscreen content; use its actual visible item keys.
+    LaunchedEffect(explorerListState, state.bq8FreshBatchId) {
+        if (state.bq8FreshBatchId != null) {
+            snapshotFlow {
+                explorerListState.layoutInfo.visibleItemsInfo.mapNotNull { item ->
+                    (item.key as? String)
+                        ?.takeIf { it.startsWith("rec-") }
+                        ?.removePrefix("rec-")
+                }
+            }.collect { visibleIds ->
+                visibleIds.forEach(viewModel::bq8RecommendationVisible)
+            }
+        }
+    }
+
     LazyColumn(
+        state = explorerListState,
         modifier = modifier.fillMaxSize().background(MaterialTheme.colorScheme.background),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 24.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
@@ -385,6 +406,16 @@ fun ExplorerScreen(
                         fontWeight = FontWeight.SemiBold,
                     )
                 }
+            }
+        }
+
+        item {
+            if (com.sidequests.app.BuildConfig.DEBUG && state.bq8FreshBatchId != null) {
+                Text(
+                    text = "BQ8 test · server arm: ${state.bq8Variant ?: "unassigned"}",
+                    modifier = Modifier.padding(horizontal = 20.dp),
+                    style = MaterialTheme.typography.labelSmall,
+                )
             }
         }
 
