@@ -69,8 +69,10 @@ class Bq9RecommendationOutboxTest {
         assertEquals(setOf("recommendation_skipped", "recommendation_accepted"), saved.map { it.eventType }.toSet())
     }
 
-    @Test fun `non BQ9 events stay on their existing delivery path`() {
-        assertFalse(Bq9RecommendationOutbox.supports("quest_accepted"))
+    @Test fun `Sprint4 confirmed starts use the durable outbox, other events keep their original path`() {
+        assertTrue(Bq9RecommendationOutbox.supports("quest_accepted"))
+        assertTrue(Bq9RecommendationOutbox.supports("s4_start_confirmed"))
+        assertTrue(Bq9RecommendationOutbox.supports("s4_discovery_shown"))
         assertFalse(Bq9RecommendationOutbox.supports("onboarding_step_completed"))
         assertTrue(Bq9RecommendationOutbox.supports("recommendation_shown"))
     }
