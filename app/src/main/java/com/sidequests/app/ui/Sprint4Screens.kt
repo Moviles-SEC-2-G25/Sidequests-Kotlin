@@ -184,7 +184,9 @@ fun Sprint4SocialComfortScreen(state: SidequestsUiState, viewModel: AppViewModel
                 )
             }
         }
-        Text("Showing ${quests.size} compatible quests. This is an opt-in preference filter, not proof that personalization causes higher completion or retention.",
+        Text("Comparison: ${viewModel.sprint4SocialVariant()} arm. The baseline does not apply the comfort filter, while the personalized arm does.",
+            style = MaterialTheme.typography.bodySmall)
+        Text("Showing ${quests.size} quests. Outcome comparisons require sufficient real data, not a claim of guaranteed benefit.",
             style = MaterialTheme.typography.bodySmall)
         if (quests.isEmpty()) Text("No matching quests. Choose another comfort level or adjust your filters.")
         quests.take(6).forEach { quest ->
