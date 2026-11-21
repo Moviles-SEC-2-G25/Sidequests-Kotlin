@@ -168,6 +168,14 @@ private fun AuthenticatedSidequestsContent(
                         onRequestLocation = onRequestLocation,
                     )
 
+                    AppScreen.InstantPlan -> Sprint4InstantPlanScreen(state, viewModel)
+
+                    AppScreen.GroupDiscovery -> Sprint4GroupDiscoveryScreen(state, viewModel)
+
+                    AppScreen.VarietyDiscovery -> Sprint4VarietyDiscoveryScreen(state, viewModel)
+
+                    AppScreen.SocialComfort -> Sprint4SocialComfortScreen(state, viewModel)
+
                     AppScreen.QuestDetail -> QuestDetailScreen(
                         viewModel.selectedQuest(),
                         viewModel,
