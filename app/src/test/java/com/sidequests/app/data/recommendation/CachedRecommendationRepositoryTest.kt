@@ -55,6 +55,25 @@ class CachedRecommendationRepositoryTest {
     }
 
     @Test
+    fun `server experiment results never cross authenticated account boundaries`() = runTest {
+        val remote = FakeRemote()
+        val cache = CachedRecommendationRepository(remote, clock = { now })
+        cache.useAccountScope("alice")
+        cache.recommend(30, prefs)
+        cache.recommend(30, prefs)
+        assertEquals(1, remote.calls)
+
+        cache.useAccountScope("bob")
+        cache.recommend(30, prefs)
+        assertEquals(2, remote.calls)
+
+        cache.useAccountScope("alice")
+        cache.recommend(30, prefs)
+        assertEquals(2, remote.calls)
+        assertEquals(CachedRecommendationRepository.Source.CACHE, cache.lastSource)
+    }
+
+    @Test
     fun `stale entry is returned when the network fails`() = runTest {
         val remote = FakeRemote()
         val cache = CachedRecommendationRepository(remote, ttlMillis = 1_000, clock = { now })
