@@ -28,11 +28,15 @@ import com.sidequests.app.model.SocialLevel
 
 /** Four brand-new Sprint 4 views, separate from Sprint 2 and 3 screens. */
 @Composable
-fun Sprint4EntryPoints(onNavigate: (AppScreen) -> Unit) {
+fun Sprint4EntryPoints(onNavigate: (AppScreen) -> Unit, instantQuest: Quest?, onQuickStart: () -> Unit) {
     Card(modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("DISCOVER MORE", style = MaterialTheme.typography.titleMedium)
             Text("Four ways to find your next quest", style = MaterialTheme.typography.bodySmall)
+            if (instantQuest != null) {
+                Text("Ready now: ${instantQuest.title}", style = MaterialTheme.typography.bodySmall)
+                PrimaryButton("Start this quest directly", onQuickStart)
+            }
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 Sprint4Link("Quick plan", Modifier.weight(1f)) { onNavigate(AppScreen.InstantPlan) }
                 Sprint4Link("In a group", Modifier.weight(1f)) { onNavigate(AppScreen.GroupDiscovery) }
