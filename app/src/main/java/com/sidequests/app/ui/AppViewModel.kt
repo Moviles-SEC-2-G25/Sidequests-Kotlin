@@ -46,6 +46,7 @@ import com.sidequests.app.data.local.StoredPhotoProof
 import com.sidequests.app.data.local.PhotoQuestSnapshot
 import com.sidequests.app.data.photo.photoEvent
 import com.sidequests.app.data.recommendation.RecommendationRepository
+import com.sidequests.app.domain.Bq8RecommendationPresentation
 import com.sidequests.app.data.recommendation.CachedRecommendationRepository
 import com.sidequests.app.data.recommendation.SupabaseRecommendationRepository
 import com.sidequests.app.model.AppScreen
@@ -124,6 +125,7 @@ class AppViewModel(
     private val alternativeRecommender = QuestAlternativeRecommender()
     private var alternativeJob: Job? = null
     private var openedFromSmartPicksId: String? = null
+    private val bq8RecordedExposures = mutableSetOf<String>()
     private var attachedUserId: String? = null
     private var accountGeneration = 0
     private var photoObserver: Job? = null
@@ -225,6 +227,8 @@ class AppViewModel(
     }
 
     fun detachAccount() {
+        (recommendationRepository as? CachedRecommendationRepository)?.useAccountScope(null)
+        bq8RecordedExposures.clear()
         historyOwner = null
         attachedUserId = null
         accountGeneration += 1
@@ -236,6 +240,8 @@ class AppViewModel(
     fun attachAccount(userId: String) {
         if (attachedUserId == userId && _uiState.value.accountUserId == userId && _uiState.value.localStateError == null) return
         historyOwner = null
+        (recommendationRepository as? CachedRecommendationRepository)?.useAccountScope(userId)
+        bq8RecordedExposures.clear()
         attachedUserId = userId
         accountGeneration += 1
         photoObserver?.cancel()
@@ -507,28 +513,64 @@ class AppViewModel(
     fun recommendations(): List<Quest> {
         val state = _uiState.value
 
-        val base = if (state.remoteRecommendationIds.isNotEmpty()) {
-            state.remoteRecommendationIds.mapNotNull { id ->
-                repository.allQuests().firstOrNull { it.id == id }
-            }
-        } else {
-            val completedIds = state.progressByQuest
-                .filterValues { it.completedSteps.size >= 4 }
-                .keys
-            val inProgressIds = state.progressByQuest
-                .filterValues { it.completedSteps.size in 1..3 && !it.abandoned }
-                .keys
-
-            repository.recommendations(
-                availableMinutes = state.availableTime,
-                preferences = state.preferences,
-                skippedIds = state.skippedQuestIds,
-                completedIds = completedIds,
-                inProgressIds = inProgressIds,
+        // BQ8: the backend controls the order of experimental recommendations.
+        // Applying context-aware re-ranking here would display a different order
+        // than the server's rank_position and corrupt the comparison of arms.
+        if (state.remoteRecommendationIds.isNotEmpty()) {
+            return Bq8RecommendationPresentation.orderedQuests(
+                state.remoteRecommendationIds,
+                repository.allQuests(),
             )
         }
 
-        return recommendationEngine.apply(base, _contextState.value.context)
+        val completedIds = state.progressByQuest
+            .filterValues { it.completedSteps.size >= 4 }
+            .keys
+        val inProgressIds = state.progressByQuest
+            .filterValues { it.completedSteps.size in 1..3 && !it.abandoned }
+            .keys
+        val local = repository.recommendations(
+            availableMinutes = state.availableTime,
+            preferences = state.preferences,
+            skippedIds = state.skippedQuestIds,
+            completedIds = completedIds,
+            inProgressIds = inProgressIds,
+        )
+        // Context adaptation remains available for offline/sample fallback.
+        return recommendationEngine.apply(local, _contextState.value.context)
+    }
+
+    /** BQ8 records an impression only when a current RPC-ranked card is in
+     * the visible LazyColumn viewport. Cached results never start a new batch.
+     * Multiple recompositions and scrolling back to the card are deduplicated.
+     */
+    fun bq8RecommendationVisible(questId: String) {
+        val state = _uiState.value
+        val batch = state.bq8FreshBatchId ?: return
+        if (state.screen != AppScreen.Explorer ||
+            state.catalogLoading || state.recommendationLoading ||
+            questId !in state.remoteRecommendationIds) return
+        val quest = repository.allQuests().firstOrNull { it.id == questId } ?: return
+        val key = "${batch}:${questId}"
+        if (!bq8RecordedExposures.add(key)) return
+
+        val rank = state.bq8RankByQuestId[questId]
+            ?: state.remoteRecommendationIds.indexOf(questId) + 1
+        val contextMetadata = buildRecommendationContextMetadata(
+            context = _contextState.value.context,
+            rank = rank,
+        )
+        trackEvent(
+            eventType = "recommendation_shown",
+            quest = quest,
+            metadata = buildJsonObject {
+                contextMetadata.forEach { (field, value) -> put(field, value) }
+                put("batch_id", batch)
+                put("rank", rank)
+                state.bq8Variant?.let { put("variant", it) }
+                put("source", "rpc_viewport")
+            },
+        )
     }
 
 
@@ -595,11 +637,24 @@ class AppViewModel(
                 .onSuccess { results ->
                     if (generation != accountGeneration) return@onSuccess
                     val ids = results.map { it.questId }
+                    val source = (remote as? CachedRecommendationRepository)?.lastSource
+                    val isFreshRpc = source == null || source == CachedRecommendationRepository.Source.NETWORK
+                    val batchId = if (isFreshRpc && ids.isNotEmpty()) UUID.randomUUID().toString() else null
+                    if (batchId != null) bq8RecordedExposures.clear()
+                    val serverArm = Bq8RecommendationPresentation.experimentArm(
+                        results.map { it.variant }
+                    )
+                    val serverRanks = results.mapIndexed { index, row ->
+                        row.questId to (row.rankPosition?.takeIf { it > 0 } ?: index + 1)
+                    }.toMap()
                     _uiState.update {
                         it.copy(
                             recommendationLoading = false,
                             remoteRecommendationIds = ids,
-                            recommendationSource = when ((remote as? CachedRecommendationRepository)?.lastSource) {
+                            bq8FreshBatchId = batchId,
+                            bq8Variant = serverArm,
+                            bq8RankByQuestId = serverRanks,
+                            recommendationSource = when (source) {
                                 CachedRecommendationRepository.Source.CACHE -> "Smart Picks · cached · " + ids.size + " quests"
                                 CachedRecommendationRepository.Source.STALE_CACHE -> "Smart Picks · saved (offline) · " + ids.size + " quests"
                                 else -> "Supabase BQ5 · " + ids.size + " quests"
@@ -607,20 +662,8 @@ class AppViewModel(
                             recommendationError = null,
                         )
                     }
-
-                    val contextSnapshot = _contextState.value.context
-                    ids.forEachIndexed { index, id ->
-                        repository.allQuests().firstOrNull { it.id == id }?.let { quest ->
-                            trackEvent(
-                                eventType = "recommendation_shown",
-                                quest = quest,
-                                metadata = buildRecommendationContextMetadata(
-                                    context = contextSnapshot,
-                                    rank = index + 1,
-                                ),
-                            )
-                        }
-                    }
+                    // No event here: a successful RPC does not prove a card was seen.
+                    // ExplorerScreen records one impression when each card enters its viewport.
                 }
                 .onFailure { throwable ->
                     if (generation != accountGeneration) return@onFailure
@@ -629,6 +672,9 @@ class AppViewModel(
                         it.copy(
                             recommendationLoading = false,
                             remoteRecommendationIds = emptyList(),
+                            bq8FreshBatchId = null,
+                            bq8Variant = null,
+                            bq8RankByQuestId = emptyMap(),
                             recommendationSource = "Local fallback",
                             recommendationError = throwable.message ?: "Shared recommendation unavailable.",
                         )
