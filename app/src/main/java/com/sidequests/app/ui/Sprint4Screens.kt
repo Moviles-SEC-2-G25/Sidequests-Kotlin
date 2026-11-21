@@ -170,8 +170,10 @@ fun Sprint4VarietyDiscoveryScreen(state: SidequestsUiState, viewModel: AppViewMo
 fun Sprint4SocialComfortScreen(state: SidequestsUiState, viewModel: AppViewModel) {
     var chosen by remember(state.accountUserId) { mutableStateOf(state.preferences.socialLevel) }
     val quests = viewModel.sprint4ComfortOptions(chosen)
-    LaunchedEffect(chosen, quests.map { it.id }) {
-        viewModel.sprint4RecordShown("social_comfort", quests, chosen)
+    // Only record the candidate subset that this screen actually offers.
+    val shownQuests = quests.take(3)
+    LaunchedEffect(chosen, shownQuests.map { it.id }) {
+        viewModel.sprint4RecordShown("social_comfort", shownQuests, chosen)
     }
     Sprint4Page(
         title = "Your comfort, your choice",
@@ -193,7 +195,7 @@ fun Sprint4SocialComfortScreen(state: SidequestsUiState, viewModel: AppViewModel
         Text("Showing ${quests.size} quests. Outcome comparisons require sufficient real data, not a claim of guaranteed benefit.",
             style = MaterialTheme.typography.bodySmall)
         if (quests.isEmpty()) Text("No matching quests. Choose another comfort level or adjust your filters.")
-        quests.take(6).forEach { quest ->
+        shownQuests.forEach { quest ->
             Sprint4QuestOption(quest, "Review this quest") {
                 viewModel.sprint4OpenDetail(quest.id, "social_comfort", chosen)
             }
