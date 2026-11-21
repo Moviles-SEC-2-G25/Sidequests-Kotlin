@@ -251,7 +251,14 @@ fun ExplorerScreen(
         contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 24.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        item { Sprint4EntryPoints(onNavigate = viewModel::navigate) }
+        item {
+            val quickPlan = viewModel.sprint4InstantPlan()
+            Sprint4EntryPoints(
+                onNavigate = viewModel::navigate,
+                instantQuest = quickPlan,
+                onQuickStart = { quickPlan?.let { viewModel.sprint4StartInstant(it.id) } },
+            )
+        }
         item {
             Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 18.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
