@@ -24,6 +24,9 @@ interface RecommendationRepository {
 data class RecommendationResult(
     val questId: String,
     val score: Double,
+    val variant: String? = null,
+    val rankPosition: Int? = null,
+    val category: String? = null,
 )
 
 @Serializable
@@ -31,6 +34,9 @@ private data class RecommendationRowDto(
     @SerialName("quest_id")
     val questId: String,
     val score: Double,
+    val variant: String? = null,
+    @SerialName("rank_position") val rankPosition: Int? = null,
+    val category: String? = null,
 )
 
 class SupabaseRecommendationRepository(
@@ -63,7 +69,7 @@ class SupabaseRecommendationRepository(
                     },
                 )
                 .decodeList<RecommendationRowDto>()
-                .map { RecommendationResult(it.questId, it.score) }
+                .map { RecommendationResult(it.questId, it.score, it.variant, it.rankPosition, it.category) }
         }
     }
 }
