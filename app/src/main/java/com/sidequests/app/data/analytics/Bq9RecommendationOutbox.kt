@@ -22,6 +22,10 @@ internal object Bq9RecommendationOutbox {
         "recommendation_shown",
         "recommendation_accepted",
         "recommendation_skipped",
+        // Reuse the durable per-account WorkManager queue for new Sprint 4 interactions.
+        "s4_discovery_shown",
+        "s4_discovery_selected",
+        "s4_start_confirmed",
     )
 
     fun supports(eventType: String): Boolean = eventType in events
@@ -38,7 +42,7 @@ internal object Bq9RecommendationOutbox {
         occurredAt: String = Instant.now().toString(),
         eventId: String = UUID.randomUUID().toString(),
     ) {
-        require(supports(eventType)) { "Only recommendation events use this outbox." }
+        require(supports(eventType)) { "Only approved durable analytics events use this outbox." }
 
         val event = PendingAnalyticsEvent(
             id = eventId,
