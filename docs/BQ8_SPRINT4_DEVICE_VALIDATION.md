@@ -26,14 +26,19 @@
 - Not proven: hosted batch output, comparative benefit of the diverse arm,
   physical-device behavior, upload of queued events or profiler gains.
 
+For the combined BQ8 experiment + Something Different test, use the
+`integration/s4-bq8-check` **verification branch**, which contains both
+independently reviewable Kotlin changes. After the team merges both PRs,
+repeat a smoke test on `main`. The integration branch is NOT a PR.
+
 ## Tester setup — Android device (not emulator)
 
 1. Clone an isolated working directory (do not overwrite existing local work):
    `git clone https://github.com/Moviles-SEC-2-G25/Sidequests-Kotlin.git`.
 2. Enter the directory, run:
    `git fetch origin`;
-   `git switch feature/s4-bq8-variety-ui`;
-   `git pull --ff-only origin feature/s4-bq8-variety-ui`.
+   `git switch integration/s4-bq8-check`;
+   `git pull --ff-only origin integration/s4-bq8-check`.
    Record the tested commit: `git rev-parse --short HEAD`.
 3. Install Android Studio, Android SDK 36 and USB/device drivers if needed.
    Connect a real Android device (Android 8.0 / API 26 or later) with USB
