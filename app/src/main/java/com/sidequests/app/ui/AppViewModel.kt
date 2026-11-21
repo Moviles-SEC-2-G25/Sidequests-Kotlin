@@ -857,6 +857,8 @@ class AppViewModel(
         persistActiveQuestProgress(questId, attemptId, acceptedProgress)
 
         if (createsNewAttempt) {
+            // The direct plan counts its tap in sprint4StartInstant; standard acceptance counts here.
+            if (sprint4StartPath != "instant_plan") sprint4FlowInteractions += 1
             // BQ4 clock starts at the Explore entry point, for both standard and instant paths.
             val secondsToStart = (((System.nanoTime() / 1_000_000L) -
                 sprint4FlowStartedAtMillis).coerceAtLeast(0L) / 1000.0)
