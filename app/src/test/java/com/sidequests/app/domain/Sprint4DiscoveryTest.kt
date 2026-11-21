@@ -80,7 +80,7 @@ class Sprint4DiscoveryTest {
         val all = listOf(quest("solo", "Art"), quest("social", "Art", social = SocialLevel.Social),
             quest("group", "Art", social = SocialLevel.Group, group = true))
         assertEquals(listOf("solo"), Sprint4Discovery.comfortOptions(all, prefs, 30, SocialLevel.Solo).map { it.id })
-        assertEquals(listOf("solo", "social"), Sprint4Discovery.comfortOptions(all, prefs, 30, SocialLevel.Social).map { it.id })
+        assertEquals(listOf("social", "solo"), Sprint4Discovery.comfortOptions(all, prefs, 30, SocialLevel.Social).map { it.id })
         assertEquals(3, Sprint4Discovery.comfortOptions(all, prefs, 30, SocialLevel.Group).size)
         assertEquals(SocialLevel.Group, prefs.socialLevel)
     }
