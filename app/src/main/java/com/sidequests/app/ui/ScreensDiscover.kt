@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -29,6 +30,8 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.snapshotFlow
+import kotlinx.coroutines.flow.collect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -262,7 +265,26 @@ fun ExplorerScreen(
         state.attemptIdByQuest, state.catalogSource, state.catalogLoading,
     ) { viewModel.sprint4InstantPlan() }
 
+    val explorerListState = rememberLazyListState()
+    // Compose only emits BQ8 impressions after an RPC-ranked card enters the
+    // actual visible list viewport. LazyColumn can precompose offscreen items,
+    // so merely executing a card composable would not be reliable evidence.
+    LaunchedEffect(explorerListState, state.bq8FreshBatchId) {
+        if (state.bq8FreshBatchId != null) {
+            snapshotFlow {
+                explorerListState.layoutInfo.visibleItemsInfo.mapNotNull { item ->
+                    (item.key as? String)
+                        ?.takeIf { it.startsWith("rec-") }
+                        ?.removePrefix("rec-")
+                }
+            }.collect { visibleIds ->
+                visibleIds.forEach(viewModel::bq8RecommendationVisible)
+            }
+        }
+    }
+
     LazyColumn(
+        state = explorerListState,
         modifier = modifier.fillMaxSize().background(MaterialTheme.colorScheme.background),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 24.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
@@ -407,6 +429,15 @@ fun ExplorerScreen(
                         fontSize = 11.sp,
                         fontWeight = FontWeight.SemiBold,
                     )
+                    if (com.sidequests.app.BuildConfig.DEBUG && state.bq8FreshBatchId != null) {
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            text = "BQ8 test · server arm: ${state.bq8Variant ?: "unassigned"}",
+                            color = Color.White.copy(alpha = .9f),
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                        )
+                    }
                 }
             }
         }
