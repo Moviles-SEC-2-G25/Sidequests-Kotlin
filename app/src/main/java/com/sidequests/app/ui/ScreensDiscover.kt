@@ -234,17 +234,33 @@ fun ExplorerScreen(
     onRequestLocation: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val recommendations = viewModel.recommendations()
-    // Re-evaluated on every recomposition triggered by a new state.
+    // Sprint 4 micro-optimization candidate: derive list data only when relevant inputs
+    // change, not on every unrelated Compose recomposition. Profile before claiming gains.
+    val recommendations = androidx.compose.runtime.remember(
+        viewModel, state.remoteRecommendationIds, state.availableTime,
+        state.preferences, state.skippedQuestIds, state.progressByQuest,
+        state.catalogSource, state.catalogLoading, contextState.context,
+    ) { viewModel.recommendations() }
+
     val difficultySuggestion = viewModel.difficultySuggestion()
 
     androidx.compose.runtime.LaunchedEffect(Unit) {
         viewModel.applySmartAvailableTime()
     }
-    val filtered = viewModel.allQuests().filter {
-        (state.selectedCategory == "All" || it.category == state.selectedCategory) &&
-            it.id !in state.skippedQuestIds
+    val filtered = androidx.compose.runtime.remember(
+        viewModel, state.selectedCategory, state.skippedQuestIds,
+        state.catalogSource, state.catalogLoading,
+    ) {
+        viewModel.allQuests().filter {
+            (state.selectedCategory == "All" || it.category == state.selectedCategory) &&
+                it.id !in state.skippedQuestIds
+        }
     }
+    val quickPlan = androidx.compose.runtime.remember(
+        viewModel, state.sprint4PinnedQuestId, state.availableTime,
+        state.preferences, state.skippedQuestIds, state.progressByQuest,
+        state.attemptIdByQuest, state.catalogSource, state.catalogLoading,
+    ) { viewModel.sprint4InstantPlan() }
 
     LazyColumn(
         modifier = modifier.fillMaxSize().background(MaterialTheme.colorScheme.background),
@@ -252,7 +268,6 @@ fun ExplorerScreen(
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         item {
-            val quickPlan = viewModel.sprint4InstantPlan()
             Sprint4EntryPoints(
                 onNavigate = viewModel::navigate,
                 instantQuest = quickPlan,
