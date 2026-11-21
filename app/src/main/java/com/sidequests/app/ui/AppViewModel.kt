@@ -555,11 +555,19 @@ class AppViewModel(
         )
     }
 
+    fun sprint4SocialVariant(): String = Sprint4Discovery.socialVariant(attachedUserId)
+
     fun sprint4ComfortOptions(level: SocialLevel): List<Quest> {
         val state = _uiState.value
-        return Sprint4Discovery.comfortOptions(
-            repository.allQuests(), state.preferences, state.availableTime, level, sprint4ExcludedIds(),
-        )
+        return if (sprint4SocialVariant() == "control") {
+            Sprint4Discovery.eligible(
+                repository.allQuests(), state.availableTime, state.preferences.budgetMax, sprint4ExcludedIds(),
+            ).sortedWith(compareBy<Quest> { it.durationMinutes }.thenBy { it.id })
+        } else {
+            Sprint4Discovery.comfortOptions(
+                repository.allQuests(), state.preferences, state.availableTime, level, sprint4ExcludedIds(),
+            )
+        }
     }
 
     /** Analytics evidence for opt-in discovery; exposures are not automatically counted as accepts. */
@@ -569,6 +577,7 @@ class AppViewModel(
             trackEvent("s4_discovery_shown", quest, buildJsonObject {
                 put("s4_source", source)
                 comfort?.let { put("comfort_level", it.name.lowercase()) }
+            if (source == "social_comfort") put("variant", sprint4SocialVariant())
             })
         }
     }
@@ -583,6 +592,7 @@ class AppViewModel(
         trackEvent("s4_discovery_selected", quest, buildJsonObject {
             put("s4_source", source)
             comfort?.let { put("comfort_level", it.name.lowercase()) }
+            if (source == "social_comfort") put("variant", sprint4SocialVariant())
         })
     }
 
@@ -857,6 +867,7 @@ class AppViewModel(
                 put("discovery_source", sprint4DiscoverySource ?: "explore")
                 put("attempt_id", attemptId)
                 sprint4ComfortAtSelection?.let { put("comfort_level", it.name.lowercase()) }
+                if (sprint4DiscoverySource == "social_comfort") put("variant", sprint4SocialVariant())
             }
             updateJourney({ it.firstRecommendationAccepted(questId, firstOnboardingRecommendationSource, attemptId) })
             // BQ9 must reflect a quest acceptance confirmed by Supabase, not
