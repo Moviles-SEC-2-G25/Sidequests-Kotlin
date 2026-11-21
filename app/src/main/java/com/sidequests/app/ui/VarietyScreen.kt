@@ -62,9 +62,9 @@ fun VarietyScreen(state: SidequestsUiState, viewModel: AppViewModel) {
                         "${quest.category} · ${quest.durationMinutes} min · ${quest.difficulty.name}",
                         style = MaterialTheme.typography.bodySmall,
                     )
-                    PrimaryButton("View quest") {
+                    PrimaryButton("View quest", onClick = {
                         viewModel.openQuestDetail(quest.id)
-                    }
+                    })
                 }
             }
         }
