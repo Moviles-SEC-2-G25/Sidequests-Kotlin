@@ -44,8 +44,8 @@ Sprint 4 as it was in Sprint 3. Code reuse is not evidence of academic approval.
 - BQ14: the app assigns an account-stable variant; the personalized arm filters
   the same eligible catalogue using the user's temporary comfort choice while
   the control does not. Events include variant/comfort. The shared Analytics
-  branch computes observed acceptance, completion and seven-day-return rates;
-  cohorts without seven full days are excluded from the return denominator.
+  branch computes observed acceptance, completion and next-day-return rates;
+  cohorts without 24 full hours are excluded from the return denominator.
   Balanced cohorts and live validation remain mandatory before conclusions.
 
 ## Concurrency, local storage, cache and eventual connectivity
