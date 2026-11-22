@@ -273,6 +273,18 @@ fun ExplorerScreen(
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         item {
+            Card(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+                shape = RoundedCornerShape(20.dp),
+            ) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("DISCOVER MORE", style = MaterialTheme.typography.labelMedium)
+                    Text("Discover a new category in three suggestions", style = MaterialTheme.typography.bodySmall)
+                    PrimaryButton("Try variety", onClick = { viewModel.navigate(com.sidequests.app.model.AppScreen.VarietyDiscovery) })
+                }
+            }
+        }
+        item {
             Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 18.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(modifier = Modifier.weight(1f)) {
