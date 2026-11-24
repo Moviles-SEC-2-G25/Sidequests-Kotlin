@@ -170,6 +170,8 @@ private fun AuthenticatedSidequestsContent(
 
                     AppScreen.VarietyDiscovery -> VarietyScreen(state, viewModel)
 
+                    AppScreen.GroupChallenges -> GroupChallengesScreen(state, viewModel, deviceStatus.isOnline)
+
                     AppScreen.QuestDetail -> QuestDetailScreen(
                         viewModel.selectedQuest(),
                         viewModel,

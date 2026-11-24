@@ -73,6 +73,7 @@ enum class AppScreen {
     Explorer,
     QuestDetail,
     VarietyDiscovery,
+    GroupChallenges,
     ActiveQuest,
     ExitFlow,
     QuestAlternatives,
