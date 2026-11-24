@@ -22,6 +22,7 @@ internal object Bq9RecommendationOutbox {
         "recommendation_shown",
         "recommendation_accepted",
         "recommendation_skipped",
+        "group_challenge_client_unconfirmed",
     )
 
     fun supports(eventType: String): Boolean = eventType in events
@@ -38,7 +39,7 @@ internal object Bq9RecommendationOutbox {
         occurredAt: String = Instant.now().toString(),
         eventId: String = UUID.randomUUID().toString(),
     ) {
-        require(supports(eventType)) { "Only recommendation events use this outbox." }
+        require(supports(eventType)) { "Unsupported queued analytics event." }
 
         val event = PendingAnalyticsEvent(
             id = eventId,

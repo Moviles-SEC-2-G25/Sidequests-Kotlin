@@ -80,6 +80,7 @@ fun GroupChallengesScreen(state: SidequestsUiState, viewModel: AppViewModel, onl
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (_: Exception) {
+                viewModel.recordGroupChallengeUnconfirmed(account, action)
                 message = "The result is unknown. Reconnect and retry the same request safely."
             } finally { busy = false }
         }
@@ -90,7 +91,7 @@ fun GroupChallengesScreen(state: SidequestsUiState, viewModel: AppViewModel, onl
     }
 
     val groupQuests = viewModel.allQuests().filter { it.isGroup }
-    val canWrite = online && !busy && gateway != null && pending == null
+    val canWrite = online && !busy && loaded && gateway != null && pending == null
     Column(
         modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -98,6 +99,7 @@ fun GroupChallengesScreen(state: SidequestsUiState, viewModel: AppViewModel, onl
         TextButton(onClick = { viewModel.navigate(AppScreen.Explorer) }) { Text("Back to Explore") }
         Text("Group Challenges", style = MaterialTheme.typography.headlineMedium)
         Text("Create a shared challenge, join others and report your own completed steps.")
+        Text("Group progress is self-reported and separate from your individual quest history.", style = MaterialTheme.typography.bodySmall)
         Text("Challenges are visible to signed-in users for seven days. Only aggregate participant counts are shown.",
             style = MaterialTheme.typography.bodySmall)
         if (gateway == null) Text("Sign in with a configured backend to use shared challenges.")
@@ -118,6 +120,10 @@ fun GroupChallengesScreen(state: SidequestsUiState, viewModel: AppViewModel, onl
                     Text("${challenge.participants} participants · ${challenge.completedParticipants} completed")
                     val progress = challenge.myProgress ?: 0
                     Text("Your progress: $progress / ${challenge.totalSteps} steps")
+                    viewModel.allQuests().firstOrNull { it.id == challenge.questId }?.steps?.getOrNull(progress)?.let { step ->
+                        Text("Next: ${step.title}", style = MaterialTheme.typography.titleSmall)
+                        Text(step.description, style = MaterialTheme.typography.bodySmall)
+                    }
                     PrimaryButton(
                         text = if (progress >= challenge.totalSteps) "Completed" else "Mark next step complete",
                         onClick = {

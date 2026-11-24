@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -170,7 +171,9 @@ private fun AuthenticatedSidequestsContent(
 
                     AppScreen.VarietyDiscovery -> VarietyScreen(state, viewModel)
 
-                    AppScreen.GroupChallenges -> GroupChallengesScreen(state, viewModel, deviceStatus.isOnline)
+                    AppScreen.GroupChallenges -> key(state.accountUserId) {
+                        GroupChallengesScreen(state, viewModel, deviceStatus.isOnline)
+                    }
 
                     AppScreen.QuestDetail -> QuestDetailScreen(
                         viewModel.selectedQuest(),

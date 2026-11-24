@@ -1456,6 +1456,14 @@ class AppViewModel(
         }
     }
 
+    fun recordGroupChallengeUnconfirmed(accountId: String?, action: com.sidequests.app.data.group.GroupAction) {
+        if (accountId == null || accountId != attachedUserId) return
+        trackEvent("group_challenge_client_unconfirmed", metadata = buildJsonObject {
+            put("operation", action.operation)
+            put("request_id", action.requestId)
+        })
+    }
+
     private fun trackEvent(
         eventType: String,
         quest: Quest? = null,
