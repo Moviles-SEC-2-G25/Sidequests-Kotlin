@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -196,6 +197,10 @@ private fun AuthenticatedSidequestsContent(
                     )
 
                     AppScreen.VarietyDiscovery -> VarietyScreen(state, viewModel)
+
+                    AppScreen.GroupChallenges -> key(state.accountUserId) {
+                        GroupChallengesScreen(state, viewModel, deviceStatus.isOnline)
+                    }
 
                     AppScreen.MissionHistory, AppScreen.QuestDetail -> {
                         if (state.screen == AppScreen.MissionHistory || state.detailFromHistory) {

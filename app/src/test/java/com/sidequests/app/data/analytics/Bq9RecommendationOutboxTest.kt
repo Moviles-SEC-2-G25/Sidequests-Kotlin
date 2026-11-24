@@ -69,7 +69,20 @@ class Bq9RecommendationOutboxTest {
         assertEquals(setOf("recommendation_skipped", "recommendation_accepted"), saved.map { it.eventType }.toSet())
     }
 
-    @Test fun `non BQ9 events stay on their existing delivery path`() {
+    @Test fun `unconfirmed group request preserves identifier and operation`() {
+        Bq9RecommendationOutbox.enqueue(
+            store = store(), userId = "alice", sessionId = "session",
+            eventType = "group_challenge_client_unconfirmed", availableMinutes = 30,
+            preferences = UserPreferences(), quest = null,
+            metadata = buildJsonObject { put("operation", "join"); put("request_id", "request-1") },
+        )
+        val saved = store().read().events.single()
+        assertEquals("group_challenge_client_unconfirmed", saved.eventType)
+        assertEquals("join", saved.metadata.getValue("operation").jsonPrimitive.content)
+        assertEquals("request-1", saved.metadata.getValue("request_id").jsonPrimitive.content)
+    }
+
+    @Test fun `other events stay on their existing delivery path`() {
         assertFalse(Bq9RecommendationOutbox.supports("quest_accepted"))
         assertFalse(Bq9RecommendationOutbox.supports("onboarding_step_completed"))
         assertTrue(Bq9RecommendationOutbox.supports("recommendation_shown"))
