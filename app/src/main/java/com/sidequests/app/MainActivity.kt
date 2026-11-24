@@ -71,23 +71,6 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        deviceStatusMonitor = DeviceStatusMonitor(applicationContext)
-        ambientLightMonitor = AmbientLightMonitor(applicationContext)
-        appViewModel.setLightSensorAvailable(ambientLightMonitor.isAvailable)
-
-        // Forward connectivity/battery and ambient light changes only while the screen is visible.
-        lifecycleScope.launch {
-            repeatOnLifecycle(Lifecycle.State.STARTED) {
-                launch { deviceStatusMonitor.status.collect { appViewModel.onDeviceStatusChanged(it) } }
-                launch { ambientLightMonitor.lux.collect { lux -> if (lux != null) appViewModel.onAmbientLux(lux) } }
-                launch {
-                    ambientLightMonitor.isDark.collect { isDark ->
-                        if (isDark != null) appViewModel.onAmbientLightChanged(isDark)
-                    }
-                }
-            }
-        }
-
         setContent {
             SidequestsApp(appViewModel = appViewModel)
         }
