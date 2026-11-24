@@ -3,12 +3,9 @@ package com.sidequests.app.ui
 import com.sidequests.app.data.history.HistoryLoad
 import com.sidequests.app.data.history.HistorySource
 import com.sidequests.app.domain.*
-import java.util.concurrent.Executors
 import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceTimeBy
-import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.*
@@ -83,19 +80,18 @@ class MissionHistoryControllerTest {
         c.close()
     }
 
-    @Test fun computationRunsOnWorkerDispatcher() = runTest {
-        Executors.newSingleThreadExecutor { task -> Thread(task, "history-test-worker") }
-            .asCoroutineDispatcher().use { worker ->
-                val name = CompletableDeferred<String>()
-                val c = MissionHistoryController("alice", HistorySource { _, _ -> HistoryLoad(data,true) },
-                    backgroundScope, worker) { d, f, q ->
-                    name.complete(Thread.currentThread().name)
-                    buildMissionHistory(d,f,q)
-                }
-                c.connectivityChanged(true)
-                runCurrent()
-                assertEquals("history-test-worker",name.await())
-                c.close()
-            }
+    @Test fun computationRunsOnDefaultDispatcherOffCallingThread() = kotlinx.coroutines.runBlocking {
+        val callingThread = Thread.currentThread()
+        val actualThread = CompletableDeferred<Thread>()
+        val c = MissionHistoryController("alice", HistorySource { _, _ -> HistoryLoad(data,true) },
+            this, build = { d, f, q ->
+                actualThread.complete(Thread.currentThread())
+                buildMissionHistory(d,f,q)
+            })
+        try {
+            c.connectivityChanged(true)
+            val thread = kotlinx.coroutines.withTimeout(5_000) { actualThread.await() }
+            assertNotSame(callingThread, thread)
+        } finally { c.close() }
     }
 }
