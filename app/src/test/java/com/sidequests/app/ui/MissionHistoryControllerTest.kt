@@ -64,6 +64,31 @@ class MissionHistoryControllerTest {
         c.close()
     }
 
+    @Test fun openHistoryReactsToNetworkLossAndRecoveryWithoutReopening() = runTest {
+        val calls = mutableListOf<Boolean>()
+        val c = MissionHistoryController("alice", HistorySource { _, online ->
+            calls += online
+            HistoryLoad(data, online)
+        }, backgroundScope, StandardTestDispatcher(testScheduler))
+        c.connectivityChanged(true); runCurrent()
+        assertFalse(c.state.value.offline)
+        c.setFilter(HistoryFilter.Completed); runCurrent()
+        c.connectivityChanged(false); runCurrent()
+        assertTrue(c.state.value.offline)
+        assertTrue(c.state.value.fromCache)
+        assertEquals(1, c.state.value.history.matchCount)
+        assertEquals(listOf(true), calls)
+        c.connectivityChanged(true); runCurrent()
+        assertFalse(c.state.value.offline)
+        assertTrue(c.state.value.reconnecting)
+        advanceTimeBy(3_000); runCurrent()
+        assertEquals(listOf(true, true), calls)
+        assertFalse(c.state.value.fromCache)
+        assertEquals(HistoryFilter.Completed, c.state.value.filter)
+        assertEquals(1, c.state.value.history.matchCount)
+        c.close()
+    }
+
     @Test fun oldBuildCannotOverwriteNewFilterAndCloseCancelsWork() = runTest {
         val block = CompletableDeferred<Unit>()
         val c = MissionHistoryController("alice", HistorySource { _, _ -> HistoryLoad(data,true) },

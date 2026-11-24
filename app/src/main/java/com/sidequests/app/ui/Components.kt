@@ -273,13 +273,14 @@ fun AccentStat(label: String, value: String, emoji: String, color: Color = Disco
 
 /**
  * Context-aware feature (Sprint 2, Carlos): banner that reacts to the phone context.
- * Offline has priority over low battery. Nothing is shown when everything is normal.
+ * Offline has priority over low battery. Recovery is shown briefly after reconnection.
  */
 @Composable
 fun DeviceStatusBanner(
     status: DeviceStatus,
-    onRetry: () -> Unit,
+    onRetry: (() -> Unit)?,
     modifier: Modifier = Modifier,
+    connectionRestored: Boolean = false,
 ) {
     val title: String
     val body: String
@@ -289,6 +290,11 @@ fun DeviceStatusBanner(
             title = "You're offline"
             body = "Showing the last saved data. Actions that need internet will work again when you reconnect."
             color = MaterialTheme.colorScheme.error
+        }
+        connectionRestored -> {
+            title = "You're back online"
+            body = "Internet connection restored. Saved data can refresh automatically."
+            color = DiscoveryTeal
         }
         status.isLowBattery -> {
             title = "Battery saver"
@@ -311,7 +317,7 @@ fun DeviceStatusBanner(
                 Text(title, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                 Text(body, color = Color.White.copy(alpha = .9f), fontSize = 11.sp)
             }
-            if (!status.isOnline) {
+            if (!status.isOnline && onRetry != null) {
                 Text(
                     "Retry",
                     modifier = Modifier

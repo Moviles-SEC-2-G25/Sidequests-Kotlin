@@ -92,7 +92,7 @@ fun MissionHistoryRoute(state: SidequestsUiState, viewModel: AppViewModel, onlin
     } else {
         val back = { viewModel.navigate(AppScreen.Profile) }
         BackHandler(onBack = back)
-        MissionHistoryScreen(historyState, controller::setQuery, controller::setFilter,
+        MissionHistoryScreen(historyState.copy(offline = !online), controller::setQuery, controller::setFilter,
             controller::refresh, back, viewModel::openQuestFromHistory)
     }
 }
@@ -114,6 +114,26 @@ fun MissionHistoryScreen(
             TextButton(onClick = onBack) { Text("←", fontSize = 24.sp) }
             Text("Mi bitácora", style = MaterialTheme.typography.titleLarge)
         }
+        val historyNotice = when {
+            state.offline -> null // The app-wide banner already reports connectivity.
+            state.fromCache && (state.refreshing || state.reconnecting) -> "Actualizando tu bitácora…"
+            state.fromCache -> "No pudimos actualizar tu bitácora: estás viendo los datos guardados. Desliza hacia abajo para reintentar."
+            else -> null
+        }
+        if (historyNotice != null || state.history.pendingSyncCount > 0) {
+            Surface(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 4.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant,
+                shape = RoundedCornerShape(16.dp),
+            ) {
+                Text(
+                    listOfNotNull(historyNotice, state.history.pendingSyncCount.takeIf { it > 0 }?.let {
+                        count(it, "misión con cambios por sincronizar.", "misiones con cambios por sincronizar.")
+                    }).joinToString("\n"),
+                    modifier = Modifier.padding(12.dp), style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        }
         when {
             !state.initialized -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator()
@@ -134,18 +154,6 @@ fun MissionHistoryScreen(
                 ) {
                     item(key = "controls") {
                         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                            val notice = when {
-                                state.offline -> "Sin conexión: estás viendo tu bitácora guardada. Se actualizará sola cuando vuelva el internet."
-                                state.fromCache && (state.refreshing || state.reconnecting) -> "Conectado: actualizando tu bitácora…"
-                                state.fromCache -> "No pudimos conectar con el servidor: estás viendo tu bitácora guardada. Desliza hacia abajo para reintentar."
-                                else -> null
-                            }
-                            if (notice != null) Surface(color = MaterialTheme.colorScheme.surfaceVariant,
-                                shape = RoundedCornerShape(16.dp)) {
-                                Text(notice + if (state.history.pendingSyncCount > 0)
-                                    "\n" + count(state.history.pendingSyncCount,"misión con cambios por sincronizar.","misiones con cambios por sincronizar.") else "",
-                                    modifier = Modifier.padding(12.dp), style = MaterialTheme.typography.bodySmall)
-                            }
                             OutlinedTextField(
                                 value = state.query, onValueChange = onQuery,
                                 modifier = Modifier.fillMaxWidth(), singleLine = true,
