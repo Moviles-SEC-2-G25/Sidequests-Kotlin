@@ -118,6 +118,7 @@ class AppViewModel(
     private val settingsStore: SettingsStore? = null,
     /** BQ1 (#22): non-fatal module failures are reported here (no-op by default/in tests). */
     private val failureReporter: FailureReporter = FailureReporter.NONE,
+    val missionHistorySource: com.sidequests.app.data.history.HistorySource? = null,
 ) : ViewModel() {
 
     private val analyticsSessionId = UUID.randomUUID().toString()
@@ -686,14 +687,23 @@ class AppViewModel(
         if (screen != AppScreen.QuestAlternatives) alternativeJob?.cancel()
         if (screen != AppScreen.QuestDetail) openedFromSmartPicksId = null
         _uiState.update {
-            it.copy(screen = screen, questAlternatives = if (screen == AppScreen.QuestAlternatives) it.questAlternatives else null)
+            it.copy(screen = screen, detailFromHistory = false, questAlternatives = if (screen == AppScreen.QuestAlternatives) it.questAlternatives else null)
         }
     }
 
     fun openQuestDetail(questId: String, fromSmartPicks: Boolean = false) {
         alternativeJob?.cancel()
         openedFromSmartPicksId = if (fromSmartPicks) questId else null
-        _uiState.update { it.copy(selectedQuestId = questId, screen = AppScreen.QuestDetail, questAlternatives = null) }
+        _uiState.update { it.copy(selectedQuestId = questId, screen = AppScreen.QuestDetail, detailFromHistory = false, questAlternatives = null) }
+    }
+
+    fun openQuestFromHistory(questId: String): Boolean {
+        if (repository.allQuests().none { it.id == questId }) return false
+        alternativeJob?.cancel()
+        openedFromSmartPicksId = null
+        _uiState.update { it.copy(selectedQuestId = questId, screen = AppScreen.QuestDetail,
+            detailFromHistory = true, questAlternatives = null) }
+        return true
     }
 
     fun acceptQuest(questId: String) {

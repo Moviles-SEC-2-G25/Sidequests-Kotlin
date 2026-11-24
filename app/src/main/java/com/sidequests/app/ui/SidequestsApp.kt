@@ -21,6 +21,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -44,6 +47,21 @@ fun SidequestsApp(
 ) {
     val appState by appViewModel.uiState.collectAsStateWithLifecycle()
     val authState by authViewModel.uiState.collectAsStateWithLifecycle()
+    val deviceStatus by appViewModel.deviceStatus.collectAsStateWithLifecycle()
+    var wasOffline by remember { mutableStateOf(false) }
+    var connectionRestored by remember { mutableStateOf(false) }
+
+    LaunchedEffect(deviceStatus.isOnline) {
+        if (!deviceStatus.isOnline) {
+            wasOffline = true
+            connectionRestored = false
+        } else if (wasOffline) {
+            wasOffline = false
+            connectionRestored = true
+            delay(3_000)
+            connectionRestored = false
+        }
+    }
 
     LaunchedEffect(authState.stage, authState.userId) {
         if (authState.stage == AuthStage.SignedIn) authState.userId?.let(appViewModel::attachAccount)
@@ -58,54 +76,67 @@ fun SidequestsApp(
     }
 
     SidequestsTheme(darkTheme = appState.darkMode) {
-        when (authState.stage) {
-            AuthStage.Initializing -> {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(MaterialTheme.colorScheme.background),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    CircularProgressIndicator()
-                }
-            }
-
-            AuthStage.ConfigurationMissing -> {
-                MissingSupabaseConfigurationScreen()
-            }
-
-            AuthStage.SignedOut -> {
-                AuthScreen(
-                    state = authState,
-                    onSignIn = authViewModel::signIn,
-                    onSignUp = authViewModel::signUp,
-                    onClearFeedback = authViewModel::clearFeedback,
-                )
-            }
-
-            AuthStage.SignedIn -> {
-                if (appState.accountUserId != authState.userId || authState.userId == null) {
-                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
-                } else if (appState.localStateError != null) {
-                    Column(Modifier.padding(24.dp)) {
-                        Text(requireNotNull(appState.localStateError))
-                        TextButton(onClick = { authState.userId?.let(appViewModel::attachAccount) }) { Text("Try again") }
+        Column(
+            Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).safeDrawingPadding()
+        ) {
+            DeviceStatusBanner(
+                status = deviceStatus,
+                onRetry = if (authState.stage == AuthStage.SignedIn &&
+                    appState.accountUserId != null && appState.accountUserId == authState.userId
+                ) appViewModel::retryNetworkWork else null,
+                connectionRestored = connectionRestored,
+            )
+            Box(Modifier.weight(1f).fillMaxWidth()) {
+                when (authState.stage) {
+                    AuthStage.Initializing -> {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(MaterialTheme.colorScheme.background),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            CircularProgressIndicator()
+                        }
                     }
-                } else AuthenticatedSidequestsContent(
-                    state = appState,
-                    viewModel = appViewModel,
-                    authViewModel = authViewModel,
-                    accountEmail = authState.userEmail,
-                    onSignOut = authViewModel::signOut,
-                    onRequestLocation = {
-                        locationPermissionLauncher.launch(
-                            arrayOf(
-                                Manifest.permission.ACCESS_FINE_LOCATION,
-                                Manifest.permission.ACCESS_COARSE_LOCATION,
-                            )
+
+                    AuthStage.ConfigurationMissing -> {
+                        MissingSupabaseConfigurationScreen()
+                    }
+
+                    AuthStage.SignedOut -> {
+                        AuthScreen(
+                            state = authState,
+                            onSignIn = authViewModel::signIn,
+                            onSignUp = authViewModel::signUp,
+                            onClearFeedback = authViewModel::clearFeedback,
                         )
-                    },
-                )
+                    }
+
+                    AuthStage.SignedIn -> {
+                        if (appState.accountUserId != authState.userId || authState.userId == null) {
+                            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+                        } else if (appState.localStateError != null) {
+                            Column(Modifier.padding(24.dp)) {
+                                Text(requireNotNull(appState.localStateError))
+                                TextButton(onClick = { authState.userId?.let(appViewModel::attachAccount) }) { Text("Try again") }
+                            }
+                        } else AuthenticatedSidequestsContent(
+                            state = appState,
+                            viewModel = appViewModel,
+                            authViewModel = authViewModel,
+                            accountEmail = authState.userEmail,
+                            onSignOut = authViewModel::signOut,
+                            onRequestLocation = {
+                                locationPermissionLauncher.launch(
+                                    arrayOf(
+                                        Manifest.permission.ACCESS_FINE_LOCATION,
+                                        Manifest.permission.ACCESS_COARSE_LOCATION,
+                                    )
+                                )
+                            },
+                        )
+                    }
+                }
             }
         }
     }
@@ -142,10 +173,6 @@ private fun AuthenticatedSidequestsContent(
             .safeDrawingPadding()
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
-            DeviceStatusBanner(
-                status = deviceStatus,
-                onRetry = viewModel::retryNetworkWork,
-            )
             if (state.pendingPhotoUploads > 0) {
                 PendingPhotoUploadsBanner(state.pendingPhotoUploads, viewModel::retryPendingPhotoUploads)
             }
@@ -175,10 +202,13 @@ private fun AuthenticatedSidequestsContent(
                         GroupChallengesScreen(state, viewModel, deviceStatus.isOnline)
                     }
 
-                    AppScreen.QuestDetail -> QuestDetailScreen(
-                        viewModel.selectedQuest(),
-                        viewModel,
-                    )
+                    AppScreen.MissionHistory, AppScreen.QuestDetail -> {
+                        if (state.screen == AppScreen.MissionHistory || state.detailFromHistory) {
+                            MissionHistoryRoute(state, viewModel, deviceStatus.isOnline)
+                        } else {
+                            QuestDetailScreen(viewModel.selectedQuest(), viewModel)
+                        }
+                    }
 
                     AppScreen.ActiveQuest -> ActiveQuestScreen(
                         quest = viewModel.activeQuest(),
@@ -229,7 +259,8 @@ private fun AuthenticatedSidequestsContent(
                     AppScreen.ExitFlow,
                     AppScreen.QuestAlternatives,
                     AppScreen.Rating,
-                )
+                    AppScreen.MissionHistory,
+                ) && !(state.screen == AppScreen.QuestDetail && state.detailFromHistory)
             ) {
                 BottomBar(
                     screen = state.screen,

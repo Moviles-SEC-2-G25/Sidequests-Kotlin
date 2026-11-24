@@ -76,6 +76,7 @@ fun QuestDetailScreen(
     quest: Quest,
     viewModel: AppViewModel,
     modifier: Modifier = Modifier,
+    onBack: () -> Unit = { viewModel.navigate(AppScreen.Explorer) },
 ) {
     val deviceStatus by viewModel.deviceStatus.collectAsStateWithLifecycle()
     val appState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -87,7 +88,7 @@ fun QuestDetailScreen(
         item {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Surface(
-                    modifier = Modifier.size(42.dp).clip(CircleShape).clickable { viewModel.navigate(AppScreen.Explorer) },
+                    modifier = Modifier.size(42.dp).clip(CircleShape).clickable(onClick = onBack),
                     color = MaterialTheme.colorScheme.surfaceVariant,
                     shape = CircleShape,
                 ) { Box(contentAlignment = Alignment.Center) { Text("←", fontSize = 22.sp) } }
@@ -755,6 +756,13 @@ fun ProfileScreen(
                     showPasswordDialog = true
                 },
             )
+        }
+        item {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("Historial de misiones", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                TextButton(onClick = { viewModel.navigate(AppScreen.MissionHistory) }) { Text("Ver bitácora") }
+            }
         }
         item {
             Text("BADGES", fontSize = 10.sp, fontWeight = FontWeight.Black, color = MaterialTheme.colorScheme.onSurface.copy(alpha = .5f))
