@@ -141,10 +141,9 @@ private fun AuthenticatedSidequestsContent(
             .safeDrawingPadding()
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
-            DeviceStatusBanner(
-                status = deviceStatus,
-                onRetry = viewModel::retryNetworkWork,
-            )
+            if (state.screen != AppScreen.MissionHistory) {
+                DeviceStatusBanner(status = deviceStatus, onRetry = viewModel::retryNetworkWork)
+            }
             if (state.pendingPhotoUploads > 0) {
                 PendingPhotoUploadsBanner(state.pendingPhotoUploads, viewModel::retryPendingPhotoUploads)
             }
@@ -170,10 +169,13 @@ private fun AuthenticatedSidequestsContent(
 
                     AppScreen.VarietyDiscovery -> VarietyScreen(state, viewModel)
 
-                    AppScreen.QuestDetail -> QuestDetailScreen(
-                        viewModel.selectedQuest(),
-                        viewModel,
-                    )
+                    AppScreen.MissionHistory, AppScreen.QuestDetail -> {
+                        if (state.screen == AppScreen.MissionHistory || state.detailFromHistory) {
+                            MissionHistoryRoute(state, viewModel, deviceStatus.isOnline)
+                        } else {
+                            QuestDetailScreen(viewModel.selectedQuest(), viewModel)
+                        }
+                    }
 
                     AppScreen.ActiveQuest -> ActiveQuestScreen(
                         quest = viewModel.activeQuest(),
@@ -224,7 +226,8 @@ private fun AuthenticatedSidequestsContent(
                     AppScreen.ExitFlow,
                     AppScreen.QuestAlternatives,
                     AppScreen.Rating,
-                )
+                    AppScreen.MissionHistory,
+                ) && !(state.screen == AppScreen.QuestDetail && state.detailFromHistory)
             ) {
                 BottomBar(
                     screen = state.screen,

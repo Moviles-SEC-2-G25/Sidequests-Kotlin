@@ -45,6 +45,12 @@ class AppViewModelFactory(
             addressProvider = addressProvider,
             settingsStore = settingsStore,
             failureReporter = failureReporter,
+            missionHistorySource = if (SupabaseProvider.isConfigured) {
+                com.sidequests.app.data.history.MissionHistoryRepository(
+                    com.sidequests.app.data.history.MissionHistoryStore(File(applicationContext.noBackupFilesDir, "mission_history")),
+                    com.sidequests.app.data.history.SupabaseHistoryRemote(SupabaseProvider.client),
+                )
+            } else null,
         ) as T
     }
 }
