@@ -107,6 +107,8 @@ fun QuestCard(
     onOpen: () -> Unit,
     onSkip: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
+    /** Shown when this quest has an open attempt, e.g. "In progress · 2/4". */
+    progressLabel: String? = null,
 ) {
     Card(
         modifier = modifier.fillMaxWidth().clickable(onClick = onOpen),
@@ -128,6 +130,7 @@ fun QuestCard(
                         if (quest.isNew) MetaPill("NEW", QuestAmber.copy(alpha = .2f))
                         if (quest.isSponsored) MetaPill("SPONSORED", QuestAmber.copy(alpha = .22f))
                         if (quest.isGroup) MetaPill("GROUP", ExplorerIndigo.copy(alpha = .16f))
+                        if (progressLabel != null) MetaPill("⚡ $progressLabel", DiscoveryTeal.copy(alpha = .22f))
                     }
                     Spacer(Modifier.height(5.dp))
                     Text(
@@ -281,6 +284,7 @@ fun DeviceStatusBanner(
     onRetry: (() -> Unit)?,
     modifier: Modifier = Modifier,
     connectionRestored: Boolean = false,
+    offlineBody: String? = null,
 ) {
     val title: String
     val body: String
@@ -288,7 +292,8 @@ fun DeviceStatusBanner(
     when {
         !status.isOnline -> {
             title = "You're offline"
-            body = "Showing the last saved data. Actions that need internet will work again when you reconnect."
+            body = offlineBody
+                ?: "Showing the last saved data. Quest progress is saved on this device and syncs when you reconnect."
             color = MaterialTheme.colorScheme.error
         }
         connectionRestored -> {

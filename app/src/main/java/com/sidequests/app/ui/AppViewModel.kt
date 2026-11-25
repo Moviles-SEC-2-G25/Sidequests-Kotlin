@@ -44,6 +44,10 @@ import com.sidequests.app.data.local.LexLocalState
 import com.sidequests.app.data.local.OnboardingJourney
 import com.sidequests.app.data.local.StoredPhotoProof
 import com.sidequests.app.data.local.PhotoQuestSnapshot
+import com.sidequests.app.data.local.PendingAnalyticsEvent
+import com.sidequests.app.data.local.PendingProgressOp
+import com.sidequests.app.data.remote.isNetworkFailure
+import com.sidequests.app.domain.StepCompletionDecision
 import com.sidequests.app.data.photo.photoEvent
 import com.sidequests.app.data.recommendation.RecommendationRepository
 import com.sidequests.app.domain.Bq8RecommendationPresentation
@@ -130,6 +134,12 @@ class AppViewModel(
     private var attachedUserId: String? = null
     private var accountGeneration = 0
     private var photoObserver: Job? = null
+    /**
+     * Eventual connectivity: quest lifecycle changes go to the durable outbox and WorkManager
+     * replays them when online, so quests can be accepted and played without internet.
+     * Without a local store (unit tests, no backend) the previous direct calls are used.
+     */
+    private val progressQueueEnabled: Boolean get() = localStore != null && progressRepository != null
     private val journeyMutex = Mutex()
     private val photoMutex = Mutex()
     private val _uiState = MutableStateFlow(SidequestsUiState())
@@ -307,7 +317,11 @@ class AppViewModel(
                     ))
                 }
             }
-            state.copy(progressByQuest = progress, pendingPhotoUploads = photos.count { it.status in setOf("pending", "uploading") })
+            state.copy(
+                progressByQuest = progress,
+                pendingPhotoUploads = photos.count { it.status in setOf("pending", "uploading") },
+                pendingProgressSync = saved.progressOps.count { it.userId == userId },
+            )
         }
     }
 
@@ -348,21 +362,92 @@ class AppViewModel(
         updateJourney({ it.savePreferences(preferences) }, schedule = false)
     }
 
-    private fun persistActiveQuestProgress(questId: String, attemptId: String, progress: QuestProgress, closed: Boolean = false) {
+    private fun persistActiveQuestProgress(
+        questId: String,
+        attemptId: String,
+        progress: QuestProgress,
+        closed: Boolean = false,
+        op: PendingProgressOp? = null,
+    ) {
         val store = localStore ?: return
         val userId = attachedUserId ?: return
         viewModelScope.launch {
             try {
                 photoMutex.withLock {
                     withContext(localIoDispatcher) {
+                        // The snapshot and its queued server change are committed together.
                         store.update { saved ->
-                            saved.copy(photoQuests = saved.photoQuests + (attemptId to PhotoQuestSnapshot(userId, questId, attemptId, progress.currentStep, progress.completedSteps, closed)))
+                            saved.copy(
+                                photoQuests = saved.photoQuests + (attemptId to PhotoQuestSnapshot(userId, questId, attemptId, progress.currentStep, progress.completedSteps, closed)),
+                                progressOps = if (op == null) saved.progressOps else saved.progressOps + op,
+                            )
                         }
                     }
                 }
+                if (op != null) scheduleLocalSync(userId)
             } catch (cancelled: CancellationException) { throw cancelled }
               catch (_: Exception) { _uiState.update { it.copy(localStateError = "Quest progress could not be saved on this device. Please try again.") } }
         }
+    }
+
+    /** Builds a queued lifecycle change for the signed-in account (null when not queueing). */
+    private fun progressOp(
+        type: String,
+        questId: String,
+        attemptId: String,
+        currentStep: Int = 0,
+        completedSteps: Set<Int> = emptySet(),
+        completed: Boolean = false,
+        reason: String? = null,
+        stars: Int? = null,
+        tags: Set<String> = emptySet(),
+        confirmedEvents: List<PendingAnalyticsEvent> = emptyList(),
+    ): PendingProgressOp? {
+        if (!progressQueueEnabled) return null
+        val userId = attachedUserId ?: return null
+        return PendingProgressOp(
+            id = UUID.randomUUID().toString(),
+            userId = userId,
+            attemptId = attemptId,
+            questId = questId,
+            type = type,
+            occurredAt = java.time.Instant.now().toString(),
+            currentStep = currentStep,
+            completedSteps = completedSteps,
+            completed = completed,
+            reason = reason,
+            stars = stars,
+            tags = tags,
+            confirmedEvents = confirmedEvents,
+        )
+    }
+
+    /** Feedback right after a change was queued: it is safe on the device either way. */
+    private fun showQueuedProgress(message: String) {
+        val online = _deviceStatus.value.isOnline
+        _uiState.update {
+            it.copy(
+                progressSyncing = false,
+                progressSyncError = null,
+                progressSyncMessage = if (online) message else QUEUED_OFFLINE_MESSAGE,
+            )
+        }
+    }
+
+    /** Analytics row that is released only when Supabase confirms the queued operation. */
+    private fun confirmedEvent(eventType: String, quest: Quest, metadata: kotlinx.serialization.json.JsonObject): PendingAnalyticsEvent? {
+        if (analyticsRepository == null) return null
+        val userId = attachedUserId ?: return null
+        val state = _uiState.value
+        return Bq9RecommendationOutbox.build(
+            userId = userId,
+            sessionId = analyticsSessionId,
+            eventType = eventType,
+            availableMinutes = state.availableTime,
+            preferences = state.preferences,
+            quest = quest,
+            metadata = metadata,
+        )
     }
 
     /**
@@ -399,7 +484,7 @@ class AppViewModel(
                     _contextState.update {
                         it.copy(
                             loading = false,
-                            error = error.message ?: "Context unavailable",
+                            error = if (error.isNetworkFailure()) "weather unavailable offline" else "context unavailable",
                         )
                     }
                 }
@@ -445,6 +530,10 @@ class AppViewModel(
 
     /** Manual "Retry" from the offline banner, also used after reconnection. */
     fun retryNetworkWork() {
+        // Errors from the outage are stale now; queued progress and photos are retried right away
+        // instead of waiting for WorkManager's backoff.
+        _uiState.update { if (it.progressSyncing) it else it.copy(progressSyncError = null, progressSyncMessage = null) }
+        attachedUserId?.let(retryLocalSync)
         refreshQuestCatalog()
         refreshRecommendations()
         refreshContext(force = true)
@@ -611,7 +700,7 @@ class AppViewModel(
                                 QuestCatalogueOrigin.Remote -> "Last loaded catalogue · offline"
                                 QuestCatalogueOrigin.Sample -> "Sample catalogue · offline"
                             },
-                            catalogError = throwable.message ?: "Remote catalogue unavailable.",
+                            catalogError = if (throwable.isNetworkFailure()) "offline" else "Remote catalogue unavailable.",
                         )
                     }
                 }
@@ -677,7 +766,7 @@ class AppViewModel(
                             bq8Variant = null,
                             bq8RankByQuestId = emptyMap(),
                             recommendationSource = "Local fallback",
-                            recommendationError = throwable.message ?: "Shared recommendation unavailable.",
+                            recommendationError = if (throwable.isNetworkFailure()) "offline" else "shared recommendations unavailable",
                         )
                     }
                 }
@@ -716,16 +805,19 @@ class AppViewModel(
         } ?: false
         val existingAttemptId = currentState.attemptIdByQuest[questId]
         val createsNewAttempt = existingAttemptId == null || previousAttemptFinished
-        // Offline browsing is supported, but starting a new attempt is still a
-        // server-authoritative operation. Do not create orphaned photos/progress.
+        // Offline, a new attempt is queued durably and created in Supabase on reconnection.
+        // Group quests depend on other players, and without the durable queue there is no way to
+        // replay the acceptance, so those still need internet.
         if (createsNewAttempt && progressRepository != null && !_deviceStatus.value.isOnline) {
-            _uiState.update {
-                it.copy(
-                    progressSyncError = "Connect to the internet before accepting a new quest.",
-                    progressSyncMessage = null,
-                )
+            val reason = when {
+                quest.isGroup -> "Group quests need internet to join. Connect and try again."
+                !progressQueueEnabled -> "Connect to the internet before accepting a new quest."
+                else -> null
             }
-            return
+            if (reason != null) {
+                _uiState.update { it.copy(progressSyncError = reason, progressSyncMessage = null) }
+                return
+            }
         }
         val fromRecommendation = isRecommendationAcceptance(
             questId = questId,
@@ -761,6 +853,20 @@ class AppViewModel(
         }
 
         val acceptedProgress = _uiState.value.progressByQuest[questId] ?: QuestProgress()
+        if (createsNewAttempt && progressQueueEnabled) {
+            updateJourney({ it.firstRecommendationAccepted(questId, firstOnboardingRecommendationSource, attemptId) })
+            val attemptMetadata = buildJsonObject { put("attempt_id", attemptId) }
+            val events = listOfNotNull(
+                confirmedEvent("quest_accepted", quest, attemptMetadata),
+                if (fromRecommendation) confirmedEvent("recommendation_accepted", quest, attemptMetadata) else null,
+            )
+            persistActiveQuestProgress(
+                questId, attemptId, acceptedProgress,
+                op = progressOp(PendingProgressOp.ACCEPT, questId, attemptId, confirmedEvents = events),
+            )
+            showQueuedProgress("Saving accepted quest…")
+            return
+        }
         persistActiveQuestProgress(questId, attemptId, acceptedProgress)
 
         if (createsNewAttempt) {
@@ -1005,17 +1111,62 @@ class AppViewModel(
     }
 
 
+    /**
+     * Whether [stepIndex] of the active quest can be marked complete. Finishing the quest also
+     * needs every photo proof confirmed by Supabase (when photo uploads are available).
+     */
+    fun stepCompletionDecision(stepIndex: Int): StepCompletionDecision {
+        val state = _uiState.value
+        val quest = repository.questById(state.activeQuestId)
+        val step = quest.steps.getOrNull(stepIndex) ?: return StepCompletionDecision(false)
+        return QuestStepCompletionPolicy.evaluate(
+            stepIndex = stepIndex,
+            step = step,
+            progress = state.progressByQuest[quest.id] ?: QuestProgress(),
+            steps = quest.steps,
+            requireUploadedProofToFinish = photoProofRepository != null,
+            isOnline = _deviceStatus.value.isOnline,
+        )
+    }
+
+    /** Open (not finished, not abandoned) attempt progress for [questId], or null. */
+    fun openAttemptProgress(questId: String): QuestProgress? {
+        val state = _uiState.value
+        if (questId !in state.attemptIdByQuest) return null
+        val quest = repository.questById(questId)
+        val progress = state.progressByQuest[questId] ?: QuestProgress()
+        if (progress.abandoned || progress.completedSteps.size >= quest.steps.size) return null
+        return progress
+    }
+
+    /** True when the quest can be accepted right now, also offline when the change can be queued. */
+    fun canAcceptQuest(quest: Quest): Boolean =
+        _deviceStatus.value.isOnline || progressRepository == null || (progressQueueEnabled && !quest.isGroup)
+
+    /** Explore -> the quest already in progress: continue the same attempt instead of a new one. */
+    fun resumeQuest(questId: String) {
+        if (openAttemptProgress(questId) == null) return
+        alternativeJob?.cancel()
+        openedFromSmartPicksId = null
+        val quest = repository.questById(questId)
+        _uiState.update {
+            it.copy(
+                activeQuestId = questId,
+                screen = if (quest.isGroup) AppScreen.GroupQuest else AppScreen.ActiveQuest,
+                detailFromHistory = false,
+                questAlternatives = null,
+                progressSyncError = null,
+            )
+        }
+    }
+
     fun completeCurrentStep() {
         val state = _uiState.value
         val questId = state.activeQuestId
         val quest = repository.questById(questId)
         val current = state.progressByQuest[questId] ?: QuestProgress()
-        val currentStep = quest.steps.getOrNull(current.currentStep) ?: return
-        val completionDecision = QuestStepCompletionPolicy.evaluate(
-            stepIndex = current.currentStep,
-            step = currentStep,
-            progress = current,
-        )
+        if (quest.steps.getOrNull(current.currentStep) == null) return
+        val completionDecision = stepCompletionDecision(current.currentStep)
         if (!completionDecision.allowed) {
             _uiState.update {
                 it.copy(
@@ -1055,7 +1206,12 @@ class AppViewModel(
         }
 
         val attemptId = _uiState.value.attemptIdByQuest[questId] ?: return
-        persistActiveQuestProgress(questId, attemptId, _uiState.value.progressByQuest.getValue(questId), closed = completed)
+        val op = progressOp(PendingProgressOp.PROGRESS, questId, attemptId, nextStep, nextCompleted, completed)
+        persistActiveQuestProgress(questId, attemptId, _uiState.value.progressByQuest.getValue(questId), closed = completed, op = op)
+        if (op != null) {
+            showQueuedProgress(if (completed) "Saving completed quest…" else "Saving progress…")
+            return
+        }
         syncProgress(if (completed) "Saving completed quest…" else "Saving progress…") {
             progressRepository?.updateProgress(
                 attemptId = attemptId,
@@ -1289,7 +1445,12 @@ class AppViewModel(
         )
 
         val attemptId = state.attemptIdByQuest[questId] ?: return
-        persistActiveQuestProgress(questId, attemptId, current)
+        val op = progressOp(PendingProgressOp.SAVE, questId, attemptId, current.currentStep, current.completedSteps)
+        persistActiveQuestProgress(questId, attemptId, current, op = op)
+        if (op != null) {
+            showQueuedProgress("Saving quest progress…")
+            return
+        }
         syncProgress("Saving quest progress…") {
             progressRepository?.saveProgress(
                 attemptId = attemptId,
@@ -1308,7 +1469,11 @@ class AppViewModel(
         val attemptId = state.attemptIdByQuest[questId] ?: return
         if (current.abandoned || current.completedSteps.size >= quest.steps.size) return
         val evidence = buildBq6AbandonmentEvidence(reason, quest, current)
-        persistActiveQuestProgress(questId, attemptId, current, closed = true)
+        val abandonOp = progressOp(
+            PendingProgressOp.ABANDON, questId, attemptId,
+            current.currentStep, current.completedSteps, reason = reason.code,
+        )
+        persistActiveQuestProgress(questId, attemptId, current, closed = true, op = abandonOp)
 
         recordDifficultyOutcome(DifficultyOutcome(quest.difficulty, completed = false, reason = reason))
         _uiState.update {
@@ -1355,13 +1520,17 @@ class AppViewModel(
             },
         )
 
-        syncProgress("Saving abandonment…") {
-            progressRepository?.abandonQuest(
-                attemptId = attemptId,
-                currentStep = current.currentStep,
-                completedSteps = current.completedSteps,
-                reason = reason.code,
-            ) ?: Result.success(Unit)
+        if (abandonOp != null) {
+            showQueuedProgress("Saving abandonment…")
+        } else {
+            syncProgress("Saving abandonment…") {
+                progressRepository?.abandonQuest(
+                    attemptId = attemptId,
+                    currentStep = current.currentStep,
+                    completedSteps = current.completedSteps,
+                    reason = reason.code,
+                ) ?: Result.success(Unit)
+            }
         }
         refreshQuestAlternatives()
     }
@@ -1451,12 +1620,18 @@ class AppViewModel(
         }
 
         val attemptId = state.attemptIdByQuest[questId] ?: return
+        val op = progressOp(PendingProgressOp.RATE, questId, attemptId, stars = stars, tags = tags)
         persistActiveQuestProgress(
             questId = questId,
             attemptId = attemptId,
             progress = state.progressByQuest[questId] ?: QuestProgress(),
             closed = true,
+            op = op,
         )
+        if (op != null) {
+            showQueuedProgress("Saving rating…")
+            return
+        }
         syncProgress("Saving rating…") {
             progressRepository?.rateQuest(
                 attemptId = attemptId,
@@ -1568,7 +1743,9 @@ class AppViewModel(
                     _uiState.update {
                         it.copy(
                             progressSyncing = false,
-                            progressSyncError = throwable.message ?: "Progress could not be synced.",
+                            progressSyncError = if (throwable.isNetworkFailure()) {
+                                "No internet connection. Your progress is saved on this device."
+                            } else "Progress could not be synced. Please try again.",
                             progressSyncMessage = "Saved locally; remote sync failed",
                         )
                     }
@@ -1603,5 +1780,6 @@ class AppViewModel(
         const val BATTERY_SAVER_REUSE_MILLIS = 15 * 60 * 1000L
         const val ADDRESS_OFFLINE_MESSAGE = "Address unavailable offline"
         const val ADDRESS_UNAVAILABLE_MESSAGE = "Address unavailable right now"
+        const val QUEUED_OFFLINE_MESSAGE = "Saved on this device. It will sync when you're back online."
     }
 }

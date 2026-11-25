@@ -40,8 +40,26 @@ internal object Bq9RecommendationOutbox {
         eventId: String = UUID.randomUUID().toString(),
     ) {
         require(supports(eventType)) { "Unsupported queued analytics event." }
+        val event = build(userId, sessionId, eventType, availableMinutes, preferences, quest, metadata, occurredAt, eventId)
+        store.update { state -> state.copy(events = state.events + event) }
+    }
 
-        val event = PendingAnalyticsEvent(
+    /**
+     * Builds the outbox row without storing it. Quest acceptance events built here travel with
+     * their queued progress operation and are released only once Supabase confirms it.
+     */
+    fun build(
+        userId: String,
+        sessionId: String,
+        eventType: String,
+        availableMinutes: Int,
+        preferences: UserPreferences,
+        quest: Quest?,
+        metadata: JsonObject,
+        occurredAt: String = Instant.now().toString(),
+        eventId: String = UUID.randomUUID().toString(),
+    ): PendingAnalyticsEvent {
+        return PendingAnalyticsEvent(
             id = eventId,
             userId = userId,
             journeyId = sessionId, // Existing outbox field stores the analytics session ID.
@@ -61,6 +79,5 @@ internal object Bq9RecommendationOutbox {
                 put("event_id", eventId)
             },
         )
-        store.update { state -> state.copy(events = state.events + event) }
     }
 }

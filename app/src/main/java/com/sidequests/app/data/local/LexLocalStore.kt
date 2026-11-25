@@ -70,12 +70,46 @@ data class PhotoQuestSnapshot(
     val closed: Boolean = false,
 )
 
+/**
+ * Eventual connectivity: a quest lifecycle change (accept, step progress, save, abandon, rating)
+ * waiting to be written to `user_quests`. Operations of one attempt are replayed in order and keep
+ * the time the user acted. [confirmedEvents] move to [LexLocalState.events] only after Supabase
+ * confirms the operation, so analytics never count an action the server rejected.
+ */
+@Serializable
+data class PendingProgressOp(
+    val id: String,
+    val userId: String,
+    val attemptId: String,
+    val questId: String,
+    val type: String,
+    val occurredAt: String,
+    val currentStep: Int = 0,
+    val completedSteps: Set<Int> = emptySet(),
+    val completed: Boolean = false,
+    val reason: String? = null,
+    val stars: Int? = null,
+    val tags: Set<String> = emptySet(),
+    val confirmedEvents: List<PendingAnalyticsEvent> = emptyList(),
+    val attempts: Int = 0,
+) {
+    companion object {
+        const val ACCEPT = "accept"
+        const val PROGRESS = "progress"
+        const val SAVE = "save"
+        const val ABANDON = "abandon"
+        const val RATE = "rate"
+    }
+}
+
 @Serializable
 data class LexLocalState(
     val journeys: Map<String, OnboardingJourney> = emptyMap(),
     val events: List<PendingAnalyticsEvent> = emptyList(),
     val photos: List<StoredPhotoProof> = emptyList(),
     val photoQuests: Map<String, PhotoQuestSnapshot> = emptyMap(),
+    // Optional so outbox files written before this queue existed stay readable.
+    val progressOps: List<PendingProgressOp> = emptyList(),
 )
 
 /** Small private outbox. All callers use Dispatchers.IO. State and events commit together. */
