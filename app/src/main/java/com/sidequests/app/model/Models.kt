@@ -88,6 +88,8 @@ data class SidequestsUiState(
     val localStateError: String? = null,
     val onboardingSaving: Boolean = false,
     val pendingPhotoUploads: Int = 0,
+    /** Quest lifecycle changes saved on the device and not yet confirmed by Supabase. */
+    val pendingProgressSync: Int = 0,
     val screen: AppScreen = AppScreen.Onboarding,
     val onboardingStep: Int = 0,
     val darkMode: Boolean = false,

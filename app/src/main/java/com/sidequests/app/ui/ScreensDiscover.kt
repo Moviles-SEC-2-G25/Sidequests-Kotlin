@@ -249,6 +249,13 @@ fun ExplorerScreen(
             it.id !in state.skippedQuestIds
     }
 
+    fun progressLabel(questId: String): String? = viewModel.openAttemptProgress(questId)?.let { progress ->
+        val total = viewModel.allQuests().firstOrNull { it.id == questId }?.steps?.size ?: return@let null
+        "In progress · ${progress.completedSteps.size}/$total"
+    }
+    val activeQuest = if (viewModel.hasActiveQuest()) viewModel.activeQuest() else null
+    val activeProgress = activeQuest?.let { viewModel.openAttemptProgress(it.id) }
+
     val explorerListState = rememberLazyListState()
     // Do not count a recommendation as an impression just because the RPC returned.
     // LazyColumn may precompose offscreen content; use its actual visible item keys.
@@ -272,6 +279,36 @@ fun ExplorerScreen(
         contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 24.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
+        if (activeQuest != null && activeProgress != null) {
+            item(key = "active-quest") {
+                Card(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(top = 12.dp)
+                        .clickable { viewModel.resumeQuest(activeQuest.id) },
+                    shape = RoundedCornerShape(20.dp),
+                    colors = CardDefaults.cardColors(containerColor = DiscoveryTeal.copy(alpha = .14f)),
+                ) {
+                    Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text(activeQuest.emoji, fontSize = 30.sp)
+                        Spacer(Modifier.size(12.dp))
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text("YOUR ACTIVE QUEST", color = DiscoveryTeal, fontSize = 10.sp, fontWeight = FontWeight.Black)
+                            Text(activeQuest.title, fontWeight = FontWeight.Bold)
+                            LinearProgressIndicator(
+                                progress = { activeProgress.completedSteps.size.toFloat() / activeQuest.steps.size.toFloat() },
+                                modifier = Modifier.fillMaxWidth().height(5.dp).clip(CircleShape),
+                                color = DiscoveryTeal,
+                                trackColor = MaterialTheme.colorScheme.surfaceVariant,
+                            )
+                            Text(
+                                "${activeProgress.completedSteps.size} of ${activeQuest.steps.size} steps · tap to continue",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = .62f),
+                            )
+                        }
+                    }
+                }
+            }
+        }
         item {
             Card(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
@@ -441,6 +478,7 @@ fun ExplorerScreen(
                 onOpen = { viewModel.openQuestDetail(quest.id, fromSmartPicks = true) },
                 onSkip = { viewModel.skipQuest(quest.id) },
                 modifier = Modifier.padding(horizontal = 20.dp),
+                progressLabel = progressLabel(quest.id),
             )
         }
 
@@ -466,6 +504,7 @@ fun ExplorerScreen(
                 quest = quest,
                 onOpen = { viewModel.openQuestDetail(quest.id) },
                 modifier = Modifier.padding(horizontal = 20.dp),
+                progressLabel = progressLabel(quest.id),
             )
         }
     }

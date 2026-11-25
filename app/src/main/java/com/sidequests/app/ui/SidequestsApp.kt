@@ -85,6 +85,9 @@ fun SidequestsApp(
                     appState.accountUserId != null && appState.accountUserId == authState.userId
                 ) appViewModel::retryNetworkWork else null,
                 connectionRestored = connectionRestored,
+                // Signed out there is no saved data to show: explain what needs internet instead.
+                offlineBody = if (authState.stage == AuthStage.SignedIn) null
+                    else "Signing in and creating an account need internet. Connect to continue.",
             )
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 when (authState.stage) {
@@ -106,9 +109,14 @@ fun SidequestsApp(
                     AuthStage.SignedOut -> {
                         AuthScreen(
                             state = authState,
-                            onSignIn = authViewModel::signIn,
-                            onSignUp = authViewModel::signUp,
+                            onSignIn = { email, password ->
+                                authViewModel.signIn(email, password, deviceStatus.isOnline)
+                            },
+                            onSignUp = { name, email, password ->
+                                authViewModel.signUp(name, email, password, deviceStatus.isOnline)
+                            },
                             onClearFeedback = authViewModel::clearFeedback,
+                            isOnline = deviceStatus.isOnline,
                         )
                     }
 

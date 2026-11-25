@@ -13,6 +13,8 @@ import androidx.work.workDataOf
 import com.sidequests.app.BuildConfig
 import com.sidequests.app.data.photo.PhotoProofSyncEngine
 import com.sidequests.app.data.photo.SupabasePhotoProofRepository
+import com.sidequests.app.data.progress.QuestProgressSyncEngine
+import com.sidequests.app.data.progress.SupabaseQuestProgressRepository
 import com.sidequests.app.data.remote.SupabaseProvider
 import io.github.jan.supabase.auth.auth
 import io.github.jan.supabase.auth.status.SessionStatus
@@ -37,6 +39,11 @@ class LexSyncWorker(context: Context, parameters: WorkerParameters) : CoroutineW
         if (client.auth.currentUserOrNull()?.id != userId) return@withContext Result.success()
         try {
             val store = store(applicationContext)
+            // Quest lifecycle first: photo proofs reference an attempt that must already exist.
+            val progress = SupabaseQuestProgressRepository(client)
+            val retryProgress = QuestProgressSyncEngine(store, { client.auth.currentUserOrNull()?.id }) { op ->
+                progress.apply(op)
+            }.drain(userId)
             val remote = SupabasePhotoProofRepository(client, BuildConfig.SUPABASE_QUEST_PROOFS_BUCKET)
             val retryPhoto = PhotoProofSyncEngine(store, { client.auth.currentUserOrNull()?.id }) { entry ->
                 remote.upload(entry.attemptId, entry.questId, entry.stepIndex, File(entry.localPath), entry.id, entry.userId)
@@ -61,7 +68,7 @@ class LexSyncWorker(context: Context, parameters: WorkerParameters) : CoroutineW
                 })
                 store.update { state -> state.copy(events = state.events.filterNot { it.id == event.id }) }
             }
-            if (retryPhoto) Result.retry() else Result.success()
+            if (retryPhoto || retryProgress) Result.retry() else Result.success()
         } catch (cancelled: CancellationException) { throw cancelled }
           catch (_: Exception) { Result.retry() }
     }

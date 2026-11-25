@@ -153,19 +153,56 @@ fun QuestDetailScreen(
             }
         }
         item {
-            if (!deviceStatus.isOnline) {
-                Text(
-                    "You're offline. You can browse this quest, but accepting it requires internet.",
-                    color = MaterialTheme.colorScheme.error,
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-            } else {
-                PrimaryButton(
-                    text = if (quest.isGroup) "Join group quest →" else "Accept this quest →",
-                    onClick = { viewModel.acceptQuest(quest.id) },
-                )
+            // Same attempt as the Quest tab: an open attempt is continued, never accepted again.
+            val openProgress = appState.attemptIdByQuest[quest.id]?.let { viewModel.openAttemptProgress(quest.id) }
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                if (openProgress != null) {
+                    Surface(
+                        shape = RoundedCornerShape(18.dp),
+                        color = DiscoveryTeal.copy(alpha = .12f),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text("⚡ IN PROGRESS", color = DiscoveryTeal, fontSize = 11.sp, fontWeight = FontWeight.Black)
+                            Text(
+                                "${openProgress.completedSteps.size} of ${quest.steps.size} steps completed",
+                                fontWeight = FontWeight.Bold,
+                            )
+                            LinearProgressIndicator(
+                                progress = { openProgress.completedSteps.size.toFloat() / quest.steps.size.toFloat() },
+                                modifier = Modifier.fillMaxWidth().height(6.dp).clip(CircleShape),
+                                color = DiscoveryTeal,
+                                trackColor = MaterialTheme.colorScheme.surfaceVariant,
+                            )
+                        }
+                    }
+                    PrimaryButton(
+                        text = "Continue quest →",
+                        onClick = { viewModel.resumeQuest(quest.id) },
+                        containerColor = DiscoveryTeal,
+                    )
+                } else if (viewModel.canAcceptQuest(quest)) {
+                    if (!deviceStatus.isOnline) {
+                        Text(
+                            "You're offline. You can still start this quest — your progress is saved on this device and syncs when you reconnect.",
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = .7f),
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                    }
+                    PrimaryButton(
+                        text = if (quest.isGroup) "Join group quest →" else "Accept this quest →",
+                        onClick = { viewModel.acceptQuest(quest.id) },
+                    )
+                } else {
+                    Text(
+                        if (quest.isGroup) "You're offline. Group quests need internet to join."
+                        else "You're offline. Connect to the internet to accept this quest.",
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
                 appState.progressSyncError?.let { error ->
-                    Text(error, color = MaterialTheme.colorScheme.error)
+                    Text(error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium)
                 }
             }
         }
@@ -231,6 +268,8 @@ fun ActiveQuestScreen(
         }
     }
     val allDone = progress.completedSteps.size >= quest.steps.size
+    val deviceStatus by viewModel.deviceStatus.collectAsStateWithLifecycle()
+    val appState by viewModel.uiState.collectAsStateWithLifecycle()
 
     LazyColumn(
         modifier = modifier.fillMaxSize().background(MaterialTheme.colorScheme.background),
@@ -264,6 +303,16 @@ fun ActiveQuestScreen(
                 color = DiscoveryTeal,
                 trackColor = MaterialTheme.colorScheme.surfaceVariant,
             )
+        }
+        if (appState.pendingProgressSync > 0) {
+            item {
+                Text(
+                    if (deviceStatus.isOnline) "↻ Syncing your progress…"
+                    else "☁️ Progress saved on this device · syncs automatically when you're back online",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = .62f),
+                )
+            }
         }
         items(quest.steps.indices.toList()) { index ->
             val step = quest.steps[index]
@@ -365,13 +414,38 @@ fun ActiveQuestScreen(
                         }
                     }
                     if (active && !completed) {
+                        // Recomposed when photo uploads (progress) or connectivity change.
+                        val decision = viewModel.stepCompletionDecision(index)
+                        val finishesQuest = (progress.completedSteps + index).size >= quest.steps.size
                         Spacer(Modifier.height(12.dp))
                         PrimaryButton(
-                            text = if (index == quest.steps.lastIndex) "Complete final step ✓" else "Mark step complete ✓",
+                            text = if (finishesQuest) "Complete final step ✓" else "Mark step complete ✓",
                             onClick = viewModel::completeCurrentStep,
-                            enabled = !step.requiresPhoto || progress.hasPhotoProof(index),
+                            enabled = decision.allowed,
                             containerColor = DiscoveryTeal,
                         )
+                        // The capture prompt above already explains a missing photo.
+                        if (!decision.allowed && (progress.hasPhotoProof(index) || !step.requiresPhoto)) {
+                            decision.reason?.let { reason ->
+                                Spacer(Modifier.height(6.dp))
+                                Text(
+                                    reason,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = .7f),
+                                )
+                                if (deviceStatus.isOnline && progress.photoProofUploadingSteps.isEmpty()) {
+                                    Text(
+                                        "Retry upload",
+                                        modifier = Modifier
+                                            .padding(top = 4.dp)
+                                            .clickable { viewModel.retryPendingPhotoUploads() },
+                                        color = ExplorerIndigo,
+                                        fontWeight = FontWeight.Bold,
+                                        style = MaterialTheme.typography.bodySmall,
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
             }

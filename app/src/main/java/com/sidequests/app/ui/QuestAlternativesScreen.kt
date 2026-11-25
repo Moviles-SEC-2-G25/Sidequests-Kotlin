@@ -88,8 +88,13 @@ fun QuestAlternativesScreen(
             }
             item { PrimaryButton("Refresh suggestions", viewModel::refreshQuestAlternatives) }
         }
-        if (state.progressSyncing) {
-            item { Text("Saving your previous quest…", style = MaterialTheme.typography.bodySmall) }
+        if (state.progressSyncing || state.pendingProgressSync > 0) {
+            item {
+                Text(
+                    state.progressSyncMessage?.takeIf { !state.progressSyncing } ?: "Saving your previous quest…",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
         }
         state.progressSyncError?.let {
             item { Text("Your previous quest could not be synced. $it", color = MaterialTheme.colorScheme.error) }
