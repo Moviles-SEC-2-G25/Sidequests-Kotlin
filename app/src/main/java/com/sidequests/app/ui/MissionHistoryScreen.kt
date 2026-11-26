@@ -94,7 +94,10 @@ fun MissionHistoryRoute(state: SidequestsUiState, viewModel: AppViewModel, onlin
         val back = { evidenceEntry = null }
         BackHandler(onBack = back)
         key(userId, selectedEvidence.attempt.id) {
-            AttemptEvidenceScreen(selectedEvidence, evidenceRepository, thumbnails, online, onBack = back)
+            AttemptEvidenceScreen(
+                selectedEvidence, viewModel.evidenceQuestSteps(selectedEvidence.attempt.questId),
+                evidenceRepository, thumbnails, online, onBack = back,
+            )
         }
     } else if (state.screen == AppScreen.QuestDetail) {
         BackHandler { viewModel.navigate(AppScreen.MissionHistory) }
@@ -293,7 +296,7 @@ fun MissionHistoryScreen(
                 entry.steps?.let { Text("🚶 " + count(it,"paso","pasos"), style = MaterialTheme.typography.bodySmall) }
                 if (entry.pending) Text("☁ Pendiente de sincronizar", style = MaterialTheme.typography.bodySmall)
                 if (onOpenEvidence != null && (attempt.status == "completed" || attempt.status == "abandoned")) {
-                    TextButton(onClick = onOpenEvidence) { Text("Ver evidencias") }
+                    TextButton(onClick = onOpenEvidence) { Text("View evidence") }
                 }
             }
             if (quest != null) Text("›", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 22.sp)
