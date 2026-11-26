@@ -1,11 +1,13 @@
 package com.sidequests.app.ui
 
 import android.content.Context
+import com.sidequests.app.BuildConfig
 import androidx.lifecycle.ViewModel
 import com.sidequests.app.data.LocalQuestCatalogueStore
 import com.sidequests.app.data.SupabaseSidequestsRepository
 import com.sidequests.app.data.InMemorySidequestsRepository
 import com.sidequests.app.data.local.LexSyncWorker
+import com.sidequests.app.data.photo.AttemptEvidenceRepository
 import com.sidequests.app.data.remote.SupabaseProvider
 import java.io.File
 import androidx.lifecycle.ViewModelProvider
@@ -29,6 +31,7 @@ class AppViewModelFactory(
         require(modelClass.isAssignableFrom(AppViewModel::class.java)) {
             "Unknown ViewModel class: ${modelClass.name}"
         }
+        val localStore = LexSyncWorker.store(applicationContext)
         return AppViewModel(
             contextManager = contextManager,
             repository = if (SupabaseProvider.isConfigured) {
@@ -39,7 +42,13 @@ class AppViewModelFactory(
             } else InMemorySidequestsRepository(),
             alternativeContextReader = { alternativeContextOverride ?: contextManager.readContext() },
             alternativeContextSimulated = alternativeContextOverride != null,
-            localStore = LexSyncWorker.store(applicationContext),
+            localStore = localStore,
+            attemptEvidenceRepository = AttemptEvidenceRepository(
+                store = localStore,
+                photoDirectory = File(applicationContext.filesDir, "quest-proofs"),
+                client = if (SupabaseProvider.isConfigured) SupabaseProvider.client else null,
+                bucket = BuildConfig.SUPABASE_QUEST_PROOFS_BUCKET,
+            ),
             scheduleLocalSync = { userId -> LexSyncWorker.schedule(applicationContext, userId) },
             retryLocalSync = { userId -> LexSyncWorker.schedule(applicationContext, userId, retryNow = true) },
             addressProvider = addressProvider,
