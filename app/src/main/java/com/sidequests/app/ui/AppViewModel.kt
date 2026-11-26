@@ -301,6 +301,19 @@ class AppViewModel(
         }
     }
 
+    internal suspend fun readLocalAttemptEvidence(
+        userId: String,
+        attemptId: String,
+    ): List<StoredPhotoProof> {
+        if (attachedUserId != userId) return emptyList()
+        val photos = withContext(localIoDispatcher) {
+            localStore?.read()?.photos.orEmpty()
+                .filter { it.userId == userId && it.attemptId == attemptId }
+                .sortedWith(compareBy(StoredPhotoProof::stepIndex, StoredPhotoProof::createdAt))
+        }
+        return if (attachedUserId == userId) photos else emptyList()
+    }
+
     private fun applyStoredPhotos(saved: LexLocalState, userId: String) {
         val photos = saved.photos.filter { it.userId == userId }
         _uiState.update { state ->
