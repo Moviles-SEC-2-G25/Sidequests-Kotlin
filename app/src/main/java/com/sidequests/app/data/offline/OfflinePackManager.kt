@@ -68,7 +68,11 @@ class OfflinePackManager(
     suspend fun addQuest(questId: String, isOnline: Boolean) = mutex.withLock {
         require(questId.isNotBlank()) { "Quest ID cannot be blank." }
         val ids = withContext(Dispatchers.IO) {
-            (readManifest().selectedQuestIds + questId).distinct().also(::writeManifest)
+            val updated = readManifest().copy(
+                selectedQuestIds = (readManifest().selectedQuestIds + questId).distinct(),
+            )
+            writeManifest(updated)
+            updated.selectedQuestIds
         }
         _entries.value = ids.map { id ->
             _entries.value.firstOrNull { it.questId == id }
@@ -79,7 +83,11 @@ class OfflinePackManager(
 
     suspend fun removeQuest(questId: String) = mutex.withLock {
         val ids = withContext(Dispatchers.IO) {
-            readManifest().selectedQuestIds.filterNot { it == questId }.also(::writeManifest)
+            val updated = readManifest().copy(
+                selectedQuestIds = readManifest().selectedQuestIds.filterNot { it == questId },
+            )
+            writeManifest(updated)
+            updated.selectedQuestIds
         }
         _entries.value = _entries.value.filterNot { it.questId == questId }
         updateLocalAvailability(ids)
