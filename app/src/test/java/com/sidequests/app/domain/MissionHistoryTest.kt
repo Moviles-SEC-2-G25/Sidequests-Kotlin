@@ -45,8 +45,8 @@ class MissionHistoryTest {
         assertEquals(listOf("uq-3"),ids(run(HistoryFilter.Abandoned)))
         assertEquals(listOf("uq-4","uq-1"),ids(run(query="CAFE")))
         assertEquals(listOf("uq-2"),ids(run(query="candelaria")))
-        assertEquals(listOf("uq-4","uq-1"),ids(run(query="gastronomía")))
-        assertEquals(listOf("uq-3","uq-5"),ids(run(query="bienestar")))
+        assertEquals(listOf("uq-4","uq-1"),ids(run(query="FOOD")))
+        assertEquals(listOf("uq-3","uq-5"),ids(run(query="Mindfulness")))
         assertEquals(listOf("uq-3","uq-5"),ids(run(query="mindfulness")))
         assertEquals(listOf("uq-4","uq-1"),ids(run(query="especialidad usaquen")))
         assertTrue(ids(run(query="usaquen murales")).isEmpty())
@@ -55,6 +55,18 @@ class MissionHistoryTest {
         assertEquals(listOf("uq-7"),ids(run(query="deleted")))
         assertEquals(2,run(HistoryFilter.Abandoned).pendingSyncCount)
         assertEquals("cafe con nandu",normalizeHistorySearch("  Café   CON  Ñandú "))
+    }
+
+    @Test fun categoryLabelsAreEnglish() {
+        val expected = mapOf(
+            "outdoors" to "Outdoors", "food" to "Food", "art" to "Art",
+            "learning" to "Learning", "mindfulness" to "Mindfulness",
+            "movement" to "Movement", "social" to "Social",
+        )
+        expected.forEach { (category, label) ->
+            assertEquals(label, historyCategoryLabel(category))
+        }
+        assertEquals("Food", historyCategoryLabel("FOOD"))
     }
 
     @Test fun dateUsesStatusTimestampAndLocalZoneAndStableId() {

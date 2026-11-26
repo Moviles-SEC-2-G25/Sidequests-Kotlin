@@ -64,9 +64,9 @@ internal fun AttemptEvidenceScreen(
     val result = photos
 
     Column(Modifier.fillMaxSize()) {
-        TextButton(onClick = onBack) { Text("Volver a Mi bitácora") }
+        TextButton(onClick = onBack) { Text("Back to Mission History") }
         Text(
-            text = "Evidencias del intento",
+            text = "Attempt evidence",
             style = MaterialTheme.typography.titleLarge,
             modifier = Modifier.padding(horizontal = 20.dp),
         )
@@ -76,11 +76,11 @@ internal fun AttemptEvidenceScreen(
                 CircularProgressIndicator()
             }
             result.isFailure -> Column(Modifier.padding(20.dp)) {
-                Text("No se pudieron leer las evidencias guardadas.")
-                TextButton(onClick = { reload++ }) { Text("Reintentar") }
+                Text("Could not read saved evidence.")
+                TextButton(onClick = { reload++ }) { Text("Retry") }
             }
             result.getOrThrow().isEmpty() -> Text(
-                "No hay evidencias guardadas en este teléfono para este intento.",
+                "No evidence is saved on this device for this attempt.",
                 modifier = Modifier.padding(20.dp),
             )
             else -> LazyColumn(
@@ -90,17 +90,17 @@ internal fun AttemptEvidenceScreen(
             ) {
                 items(result.getOrThrow(), key = { it.id }) { photo ->
                     Column {
-                        Text("Paso ${photo.stepIndex + 1}", style = MaterialTheme.typography.titleMedium)
+                        Text("Step ${photo.stepIndex + 1}", style = MaterialTheme.typography.titleMedium)
                         Text(
                             when (photo.status) {
-                                "uploaded" -> "Subida"
-                                "missing" -> "Archivo local no disponible"
-                                else -> "Pendiente de subir"
+                                "uploaded" -> "Uploaded"
+                                "missing" -> "Local file unavailable"
+                                else -> "Pending upload"
                             },
                         )
                         val open = openPhotoId == photo.id
                         TextButton(onClick = { openPhotoId = if (open) null else photo.id }) {
-                            Text(if (open) "Ocultar foto" else "Ver foto")
+                            Text(if (open) "Hide photo" else "View photo")
                         }
                         if (open) BaselineEvidencePhoto(photo)
                     }
@@ -135,10 +135,10 @@ private fun BaselineEvidencePhoto(photo: StoredPhotoProof) {
     val result = image
     when {
         result == null -> CircularProgressIndicator(Modifier.padding(12.dp))
-        result.isFailure -> Text("La foto no está disponible en este teléfono.")
+        result.isFailure -> Text("The photo is not available on this device.")
         else -> Image(
             bitmap = result.getOrThrow(),
-            contentDescription = "Evidencia del paso ${photo.stepIndex + 1}",
+            contentDescription = "Evidence for step ${photo.stepIndex + 1}",
             contentScale = ContentScale.Fit,
             modifier = Modifier.fillMaxWidth().heightIn(max = 360.dp),
         )

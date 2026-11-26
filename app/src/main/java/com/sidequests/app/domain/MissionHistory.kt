@@ -81,12 +81,12 @@ fun normalizeHistorySearch(value: String): String =
     value.lowercase().map { accents[it] ?: it }.joinToString("").trim().replace(whitespace, " ")
 
 fun historyCategoryLabel(category: String): String = when (category.lowercase()) {
-    "outdoors" -> "Aire libre"
-    "food" -> "Gastronomía"
-    "art" -> "Arte"
-    "learning" -> "Aprendizaje"
-    "mindfulness" -> "Bienestar"
-    "movement" -> "Movimiento"
+    "outdoors" -> "Outdoors"
+    "food" -> "Food"
+    "art" -> "Art"
+    "learning" -> "Learning"
+    "mindfulness" -> "Mindfulness"
+    "movement" -> "Movement"
     "social" -> "Social"
     else -> category
 }

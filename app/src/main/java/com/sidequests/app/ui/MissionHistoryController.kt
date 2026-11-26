@@ -94,8 +94,8 @@ class MissionHistoryController(
                     _state.update {
                         it.copy(initialized = true, hasSnapshot = false, refreshing = false,
                             error = if (online == false)
-                                "Sin conexión y sin datos guardados. Tu bitácora se cargará sola cuando vuelva el internet."
-                            else "No se pudo cargar tu bitácora. Inténtalo de nuevo.")
+                                "You are offline and no history is saved. Your mission history will load when the connection returns."
+                            else "Could not load your mission history. Please try again.")
                     }
                 }
             } catch (cancelled: CancellationException) {
@@ -103,7 +103,7 @@ class MissionHistoryController(
             } catch (_: Exception) {
                 _state.update { it.copy(initialized = true, refreshing = false,
                     fromCache = snapshot != null,
-                    error = if (snapshot == null) "No se pudo cargar tu bitácora." else null) }
+                    error = if (snapshot == null) "Could not load your mission history." else null) }
             }
         }
     }
@@ -139,7 +139,7 @@ class MissionHistoryController(
                 throw cancelled
             } catch (_: Exception) {
                 if (run == generation) _state.update {
-                    it.copy(initialized = true, updating = false, error = "No se pudo procesar tu bitácora.")
+                    it.copy(initialized = true, updating = false, error = "Could not process your mission history.")
                 }
             }
         }

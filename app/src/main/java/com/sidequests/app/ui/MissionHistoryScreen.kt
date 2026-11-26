@@ -54,6 +54,7 @@ import com.sidequests.app.domain.HistoryFilter
 import com.sidequests.app.domain.HistoryMonth
 import com.sidequests.app.domain.historyCategoryLabel
 import com.sidequests.app.domain.normalizeHistorySearch
+import com.sidequests.app.model.AbandonmentReason
 import com.sidequests.app.model.AppScreen
 import com.sidequests.app.model.SidequestsUiState
 import com.sidequests.app.ui.theme.DiscoveryTeal
@@ -62,19 +63,11 @@ import com.sidequests.app.ui.theme.QuestAmber
 import java.text.NumberFormat
 import java.util.Locale
 
-private val monthNames = listOf("Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre")
-private val monthAbbreviations = listOf("Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic")
-private fun thousands(n: Int) = NumberFormat.getIntegerInstance(Locale.forLanguageTag("es-CO")).format(n)
+private val monthNames = listOf("January","February","March","April","May","June","July","August","September","October","November","December")
+private val monthAbbreviations = listOf("Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec")
+private fun thousands(n: Int) = NumberFormat.getIntegerInstance(Locale.US).format(n)
 private fun count(n: Int, one: String, many: String) = "${thousands(n)} ${if (n == 1) one else many}"
-private val reasons = mapOf(
-    "ran_out_of_time" to "⏰ Se me acabó el tiempo",
-    "too_far" to "📍 Quedaba muy lejos",
-    "too_expensive" to "💸 Era más costosa de lo esperado",
-    "place_unavailable" to "🔒 El lugar estaba cerrado o no disponible",
-    "too_difficult" to "😅 Era muy difícil para hoy",
-    "weather_or_mood_changed" to "🌧 Cambió el clima o mi ánimo",
-    "other" to "💬 Otra razón",
-)
+private val reasons = AbandonmentReason.entries.associate { it.code to "${it.emoji} ${it.label}" }
 
 @Composable
 fun MissionHistoryRoute(state: SidequestsUiState, viewModel: AppViewModel, online: Boolean) {
@@ -120,12 +113,12 @@ fun MissionHistoryScreen(
         Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically) {
             TextButton(onClick = onBack) { Text("←", fontSize = 24.sp) }
-            Text("Mi bitácora", style = MaterialTheme.typography.titleLarge)
+            Text("Mission History", style = MaterialTheme.typography.titleLarge)
         }
         val historyNotice = when {
             state.offline -> null // The app-wide banner already reports connectivity.
-            state.fromCache && (state.refreshing || state.reconnecting) -> "Actualizando tu bitácora…"
-            state.fromCache -> "No pudimos actualizar tu bitácora: estás viendo los datos guardados. Desliza hacia abajo para reintentar."
+            state.fromCache && (state.refreshing || state.reconnecting) -> "Refreshing your mission history…"
+            state.fromCache -> "Could not refresh your mission history. Showing saved data. Pull down to retry."
             else -> null
         }
         if (historyNotice != null || state.history.pendingSyncCount > 0) {
@@ -136,7 +129,7 @@ fun MissionHistoryScreen(
             ) {
                 Text(
                     listOfNotNull(historyNotice, state.history.pendingSyncCount.takeIf { it > 0 }?.let {
-                        count(it, "misión con cambios por sincronizar.", "misiones con cambios por sincronizar.")
+                        count(it, "quest with pending changes.", "quests with pending changes.")
                     }).joinToString("\n"),
                     modifier = Modifier.padding(12.dp), style = MaterialTheme.typography.bodySmall,
                 )
@@ -147,9 +140,9 @@ fun MissionHistoryScreen(
                 CircularProgressIndicator()
             }
             !state.hasSnapshot -> HistoryMessage(
-                state.error ?: "No se pudo cargar tu bitácora.", "Reintentar", onRefresh)
+                state.error ?: "Could not load your mission history.", "Retry", onRefresh)
             state.history.totalAttempts == 0 && !state.fromCache -> HistoryMessage(
-                "Tu bitácora está vacía. ¡Acepta una misión en Explorar para empezarla!", "Volver", onBack)
+                "Your mission history is empty. Accept a quest in Explore to get started!", "Back", onBack)
             else -> PullToRefreshBox(
                 isRefreshing = state.refreshing,
                 onRefresh = onRefresh,
@@ -166,14 +159,14 @@ fun MissionHistoryScreen(
                                 value = state.query, onValueChange = onQuery,
                                 modifier = Modifier.fillMaxWidth(), singleLine = true,
                                 shape = RoundedCornerShape(16.dp),
-                                placeholder = { Text("Buscar misión, lugar o categoría", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                                placeholder = { Text("Search quests, places or categories", maxLines = 1, overflow = TextOverflow.Ellipsis) },
                                 leadingIcon = { Text("⌕", fontSize = 24.sp) },
                                 trailingIcon = { if (state.query.isNotEmpty()) TextButton(onClick = { onQuery("") }) { Text("✕") } },
                             )
                             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp),
                                 verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                listOf(HistoryFilter.All to "Todas", HistoryFilter.Completed to "Completadas",
-                                    HistoryFilter.Abandoned to "Abandonadas").forEach { (filter,label) ->
+                                listOf(HistoryFilter.All to "All", HistoryFilter.Completed to "Completed",
+                                    HistoryFilter.Abandoned to "Abandoned").forEach { (filter,label) ->
                                     FilterChip(selected = state.filter == filter, onClick = { onFilter(filter) },
                                         label = { Text(label) }, shape = RoundedCornerShape(50),
                                         colors = FilterChipDefaults.filterChipColors(
@@ -183,15 +176,15 @@ fun MissionHistoryScreen(
                             }
                             val total = state.history.totalAttempts
                             val label = if (state.filter != HistoryFilter.All || normalizeHistorySearch(state.query).isNotEmpty())
-                                "Mostrando ${state.history.matchCount} de ${count(total,"misión","misiones")}"
-                                else count(total,"misión","misiones") + " en tu bitácora"
+                                "Showing ${state.history.matchCount} of ${count(total,"quest","quests")}"
+                                else count(total,"quest","quests") + " in your mission history"
                             Text(label, style = MaterialTheme.typography.bodySmall)
                             Box(Modifier.fillMaxWidth().height(2.dp)) {
                                 if (state.updating || state.refreshing || state.reconnecting)
                                     LinearProgressIndicator(Modifier.fillMaxWidth())
                             }
                             state.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                            if (detailError) Text("El detalle de esta misión no está disponible en el catálogo actual.",
+                            if (detailError) Text("This quest is not available in the current catalogue.",
                                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
                         }
                     }
@@ -199,10 +192,10 @@ fun MissionHistoryScreen(
                         Card(shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth()) {
                             Column(Modifier.fillMaxWidth().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                                 Text("⌕", fontSize = 32.sp)
-                                Text(if (state.history.totalAttempts == 0) "No hay misiones en la copia guardada."
-                                    else "Ninguna misión coincide", style = MaterialTheme.typography.titleSmall)
-                                Text(if (state.history.totalAttempts == 0) "Se actualizará cuando vuelva la conexión."
-                                    else "Prueba con otra palabra o cambia el filtro.", style = MaterialTheme.typography.bodySmall,
+                                Text(if (state.history.totalAttempts == 0) "No quests in the saved history."
+                                    else "No matching quests", style = MaterialTheme.typography.titleSmall)
+                                Text(if (state.history.totalAttempts == 0) "History will refresh when the connection returns."
+                                    else "Try a different search or change the filter.", style = MaterialTheme.typography.bodySmall,
                                     textAlign = TextAlign.Center)
                             }
                         }
@@ -235,11 +228,11 @@ fun MissionHistoryScreen(
 
 @Composable private fun MissionMonthHeader(month: HistoryMonth) {
     val summary = buildList {
-        if (month.completedCount > 0) add(count(month.completedCount,"completada","completadas"))
-        if (month.abandonedCount > 0) add(count(month.abandonedCount,"abandonada","abandonadas"))
-        if (month.inProgressCount > 0) add("${month.inProgressCount} en curso")
+        if (month.completedCount > 0) add(count(month.completedCount,"completed","completed"))
+        if (month.abandonedCount > 0) add(count(month.abandonedCount,"abandoned","abandoned"))
+        if (month.inProgressCount > 0) add("${month.inProgressCount} in progress")
         if (month.completedMinutes > 0) add("${month.completedMinutes} min")
-        month.steps?.let { add(count(it,"paso","pasos")) }
+        month.steps?.let { add(count(it,"step","steps")) }
     }.joinToString(" · ")
     Column(Modifier.padding(top = 12.dp)) {
         Text("${monthNames[month.month-1]} ${month.year}", style = MaterialTheme.typography.titleMedium)
@@ -260,9 +253,9 @@ fun MissionHistoryScreen(
         quest?.let { add(historyCategoryLabel(it.category)); add("${it.durationMinutes} min") }
     }.joinToString(" · ")
     val (label, color) = when (attempt.status) {
-        "completed" -> "Completada" to DiscoveryTeal
-        "abandoned" -> "Abandonada" to Color(0xFFE05252)
-        else -> "En curso" to MaterialTheme.colorScheme.primary
+        "completed" -> "Completed" to DiscoveryTeal
+        "abandoned" -> "Abandoned" to Color(0xFFE05252)
+        else -> "In progress" to MaterialTheme.colorScheme.primary
     }
     Card(
         modifier = Modifier.fillMaxWidth().clickable(enabled = quest != null, onClick = onClick),
@@ -280,15 +273,15 @@ fun MissionHistoryScreen(
                     if (attempt.status == "completed") {
                         val rating = attempt.rating?.coerceIn(1,5)
                         if (rating != null) Text("★".repeat(rating) + "☆".repeat(5-rating), color = QuestAmber)
-                        else Text("Sin calificar", style = MaterialTheme.typography.bodySmall)
+                        else Text("Not rated", style = MaterialTheme.typography.bodySmall)
                     } else if (attempt.status == "abandoned") {
                         reasons[attempt.abandonReason]?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
                     }
                 }
-                entry.steps?.let { Text("🚶 " + count(it,"paso","pasos"), style = MaterialTheme.typography.bodySmall) }
-                if (entry.pending) Text("☁ Pendiente de sincronizar", style = MaterialTheme.typography.bodySmall)
+                entry.steps?.let { Text("🚶 " + count(it,"step","steps"), style = MaterialTheme.typography.bodySmall) }
+                if (entry.pending) Text("☁ Pending sync", style = MaterialTheme.typography.bodySmall)
                 if (attempt.status == "completed" || attempt.status == "abandoned") {
-                    TextButton(onClick = onOpenEvidence) { Text("Ver evidencias") }
+                    TextButton(onClick = onOpenEvidence) { Text("View evidence") }
                 }
             }
             if (quest != null) Text("›", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 22.sp)

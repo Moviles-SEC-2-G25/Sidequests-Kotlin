@@ -834,8 +834,8 @@ fun ProfileScreen(
         item {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween) {
-                Text("Historial de misiones", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-                TextButton(onClick = { viewModel.navigate(AppScreen.MissionHistory) }) { Text("Ver bitácora") }
+                Text("Mission History", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                TextButton(onClick = { viewModel.navigate(AppScreen.MissionHistory) }) { Text("View history") }
             }
         }
         item {
