@@ -167,6 +167,10 @@ private fun AuthenticatedSidequestsContent(
         viewModel.refreshQuestCatalog()
     }
 
+    LaunchedEffect(deviceStatus.isOnline) {
+        if (deviceStatus.isOnline) viewModel.retryOfflinePackDownloads()
+    }
+
     LaunchedEffect(state.screen, state.contextualNotificationShown) {
         if (state.screen == AppScreen.Explorer && !state.contextualNotificationShown) {
             delay(4_000)
@@ -244,6 +248,16 @@ private fun AuthenticatedSidequestsContent(
                     AppScreen.GroupQuest -> GroupQuestScreen(
                         viewModel.activeQuest(),
                         viewModel,
+                    )
+
+                    AppScreen.OfflinePack -> OfflinePackScreen(
+                        quests = viewModel.allQuests(),
+                        entries = viewModel.offlinePackEntries.collectAsStateWithLifecycle().value,
+                        isOnline = deviceStatus.isOnline,
+                        onAdd = viewModel::addQuestToOfflinePack,
+                        onRemove = viewModel::removeQuestFromOfflinePack,
+                        onRetry = viewModel::retryOfflinePackDownloads,
+                        onBack = { viewModel.navigate(AppScreen.Profile) },
                     )
 
                     AppScreen.Profile -> ProfileScreen(

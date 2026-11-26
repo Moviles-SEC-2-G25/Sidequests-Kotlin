@@ -81,6 +81,7 @@ enum class AppScreen {
     Rating,
     GroupQuest,
     Profile,
+    OfflinePack,
 }
 
 data class SidequestsUiState(

@@ -177,7 +177,7 @@ fun BottomBar(
     val active = when (screen) {
         AppScreen.Explorer, AppScreen.QuestDetail -> AppScreen.Explorer
         AppScreen.ActiveQuest, AppScreen.GroupQuest -> AppScreen.ActiveQuest
-        AppScreen.Profile -> AppScreen.Profile
+        AppScreen.Profile, AppScreen.OfflinePack -> AppScreen.Profile
         else -> null
     }
     val tabs = listOf(
