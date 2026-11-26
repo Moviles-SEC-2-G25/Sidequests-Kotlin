@@ -85,7 +85,13 @@ fun MissionHistoryRoute(state: SidequestsUiState, viewModel: AppViewModel, onlin
     DisposableEffect(controller) { onDispose { controller.close() } }
     LaunchedEffect(controller, online) { controller.connectivityChanged(online) }
     val historyState by controller.state.collectAsStateWithLifecycle()
-    if (state.screen == AppScreen.QuestDetail) {
+    var evidenceEntry by remember(userId) { mutableStateOf<HistoryEntry?>(null) }
+    val selectedEvidence = evidenceEntry
+    if (selectedEvidence != null) {
+        val back = { evidenceEntry = null }
+        BackHandler(onBack = back)
+        AttemptEvidenceScreen(selectedEvidence, viewModel, onBack = back)
+    } else if (state.screen == AppScreen.QuestDetail) {
         BackHandler { viewModel.navigate(AppScreen.MissionHistory) }
         QuestDetailScreen(viewModel.selectedQuest(), viewModel,
             onBack = { viewModel.navigate(AppScreen.MissionHistory) })
@@ -93,7 +99,8 @@ fun MissionHistoryRoute(state: SidequestsUiState, viewModel: AppViewModel, onlin
         val back = { viewModel.navigate(AppScreen.Profile) }
         BackHandler(onBack = back)
         MissionHistoryScreen(historyState.copy(offline = !online), controller::setQuery, controller::setFilter,
-            controller::refresh, back, viewModel::openQuestFromHistory)
+            controller::refresh, back, viewModel::openQuestFromHistory,
+            onOpenEvidence = { evidenceEntry = it })
     }
 }
 
@@ -106,6 +113,7 @@ fun MissionHistoryScreen(
     onRefresh: () -> Unit,
     onBack: () -> Unit,
     onOpen: (String) -> Boolean,
+    onOpenEvidence: (HistoryEntry) -> Unit,
 ) {
     var detailError by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxSize()) {
@@ -202,7 +210,11 @@ fun MissionHistoryScreen(
                     state.history.months.forEach { month ->
                         item(key = "month-${month.year}-${month.month}") { MissionMonthHeader(month) }
                         items(month.entries, key = { "attempt-${it.attempt.id}" }) { entry ->
-                            MissionHistoryCard(entry) { detailError = !onOpen(entry.attempt.questId) }
+                            MissionHistoryCard(
+                                entry,
+                                onClick = { detailError = !onOpen(entry.attempt.questId) },
+                                onOpenEvidence = { onOpenEvidence(entry) },
+                            )
                         }
                     }
                 }
@@ -236,7 +248,11 @@ fun MissionHistoryScreen(
 }
 
 @OptIn(ExperimentalLayoutApi::class)
-@Composable private fun MissionHistoryCard(entry: HistoryEntry, onClick: () -> Unit) {
+@Composable private fun MissionHistoryCard(
+    entry: HistoryEntry,
+    onClick: () -> Unit,
+    onOpenEvidence: () -> Unit,
+) {
     val quest = entry.quest
     val attempt = entry.attempt
     val details = buildList {
@@ -271,6 +287,9 @@ fun MissionHistoryScreen(
                 }
                 entry.steps?.let { Text("🚶 " + count(it,"paso","pasos"), style = MaterialTheme.typography.bodySmall) }
                 if (entry.pending) Text("☁ Pendiente de sincronizar", style = MaterialTheme.typography.bodySmall)
+                if (attempt.status == "completed" || attempt.status == "abandoned") {
+                    TextButton(onClick = onOpenEvidence) { Text("Ver evidencias") }
+                }
             }
             if (quest != null) Text("›", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 22.sp)
         }
