@@ -43,6 +43,7 @@ class AppViewModelFactory(
         val offlinePackManager = OfflinePackManager(
             repository = repository,
             manifestFile = File(applicationContext.filesDir, "offline_pack.json"),
+            catalogueStore = catalogueStore.takeIf { SupabaseProvider.isConfigured },
         )
 
         return AppViewModel(

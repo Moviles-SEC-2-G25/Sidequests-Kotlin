@@ -162,6 +162,7 @@ private fun AuthenticatedSidequestsContent(
     val deviceStatus by viewModel.deviceStatus.collectAsStateWithLifecycle()
     val contextState by viewModel.contextState.collectAsStateWithLifecycle()
     val passwordState by authViewModel.passwordState.collectAsStateWithLifecycle()
+    val offlinePackEntries by viewModel.offlinePackEntries.collectAsStateWithLifecycle()
 
     LaunchedEffect(Unit) {
         viewModel.refreshQuestCatalog()
@@ -252,7 +253,7 @@ private fun AuthenticatedSidequestsContent(
 
                     AppScreen.OfflinePack -> OfflinePackScreen(
                         quests = viewModel.allQuests(),
-                        entries = viewModel.offlinePackEntries.collectAsStateWithLifecycle().value,
+                        entries = offlinePackEntries,
                         isOnline = deviceStatus.isOnline,
                         onAdd = viewModel::addQuestToOfflinePack,
                         onRemove = viewModel::removeQuestFromOfflinePack,

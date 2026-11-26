@@ -1,5 +1,7 @@
 package com.sidequests.app.data.offline
 
+import com.sidequests.app.data.LocalQuestCatalogueStore
+import com.sidequests.app.data.QuestCatalogueSnapshot
 import com.sidequests.app.data.SidequestsRepository
 import com.sidequests.app.model.Quest
 import java.io.File
@@ -48,6 +50,7 @@ private data class OfflinePackManifest(
 class OfflinePackManager(
     private val repository: SidequestsRepository,
     private val manifestFile: File,
+    private val catalogueStore: LocalQuestCatalogueStore? = null,
 ) {
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
     private val mutex = Mutex()
@@ -107,12 +110,20 @@ class OfflinePackManager(
 
         // Validate selected payloads in parallel on Default, keeping CPU work off the UI thread.
         // The semaphore bounds concurrent validation if a pack contains many quests.
+        val savedSnapshot = catalogueStore?.let { store ->
+            withContext(Dispatchers.IO) { store.read() }
+        }
         val validation = coroutineScope {
             unresolved.map { entry ->
                 async(Dispatchers.Default) {
                     downloadSlots.withPermit {
-                        val quest = repository.allQuests().firstOrNull { it.id == entry.questId }
-                        entry.questId to quest?.let(::hasCompleteOfflinePayload)
+                        val ready = if (catalogueStore != null) {
+                            savedSnapshot?.let { hasCompleteOfflinePayload(it, entry.questId) } == true
+                        } else {
+                            repository.allQuests().firstOrNull { it.id == entry.questId }
+                                ?.let(::hasCompleteOfflinePayload) == true
+                        }
+                        entry.questId to ready
                     }
                 }
             }.map { it.await() }.toMap()
@@ -133,12 +144,20 @@ class OfflinePackManager(
     }
 
     private suspend fun updateLocalAvailability(ids: List<String>) {
+        val savedSnapshot = catalogueStore?.let { store ->
+            withContext(Dispatchers.IO) { store.read() }
+        }
         val current = repository.allQuests().associateBy { it.id }
         val available = coroutineScope {
             ids.map { id ->
                 async(Dispatchers.Default) {
                     downloadSlots.withPermit {
-                        id to current[id]?.let(::hasCompleteOfflinePayload)
+                        val ready = if (catalogueStore != null) {
+                            savedSnapshot?.let { hasCompleteOfflinePayload(it, id) } == true
+                        } else {
+                            current[id]?.let(::hasCompleteOfflinePayload) == true
+                        }
+                        id to ready
                     }
                 }
             }.map { it.await() }.toMap()
@@ -154,6 +173,12 @@ class OfflinePackManager(
             quest.steps.all { step ->
                 step.title.isNotBlank() && step.description.isNotBlank()
             }
+
+    private fun hasCompleteOfflinePayload(snapshot: QuestCatalogueSnapshot, questId: String): Boolean {
+        if (snapshot.quests.none { it.id == questId }) return false
+        val steps = snapshot.steps.filter { it.questId == questId }
+        return steps.isNotEmpty() && steps.all { it.title.isNotBlank() && it.description.isNotBlank() }
+    }
 
     private fun readManifest(): OfflinePackManifest {
         if (!manifestFile.isFile) return OfflinePackManifest()
