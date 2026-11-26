@@ -787,6 +787,9 @@ class AppViewModel(
         _uiState.update { it.copy(selectedQuestId = questId, screen = AppScreen.QuestDetail, detailFromHistory = false, questAlternatives = null) }
     }
 
+    internal fun evidenceQuestSteps(questId: String): List<com.sidequests.app.model.QuestStep> =
+        repository.allQuests().firstOrNull { it.id == questId }?.steps.orEmpty()
+
     fun openQuestFromHistory(questId: String): Boolean {
         if (repository.allQuests().none { it.id == questId }) return false
         alternativeJob?.cancel()

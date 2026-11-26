@@ -21,6 +21,7 @@ import kotlinx.serialization.Serializable
 data class RemoteEvidence(
     @SerialName("step_order") val stepIndex: Int,
     @SerialName("storage_path") val storagePath: String,
+    @SerialName("uploaded_at") val uploadedAt: String? = null,
 )
 
 @Serializable
@@ -35,6 +36,8 @@ internal data class EvidencePhoto(
     val file: File?,
     val storagePath: String?,
     val uploaded: Boolean,
+    val capturedAt: String? = null,
+    val uploadedAt: String? = null,
 )
 
 internal data class AttemptEvidence(
@@ -74,7 +77,7 @@ class AttemptEvidenceRepository(
             while (true) {
                 authenticatedClient(userId)
                 val page = authenticated.from("quest_photo_proofs")
-                    .select(columns = Columns.list("step_order", "storage_path")) {
+                    .select(columns = Columns.list("step_order", "storage_path", "uploaded_at")) {
                         filter { eq("attempt_id", attemptId) }
                         order("storage_path", Order.ASCENDING)
                         range(offset..offset + 199)
@@ -135,10 +138,15 @@ internal fun mergeEvidence(
             file = localFile(proof.localPath),
             storagePath = path,
             uploaded = matching != null || proof.status == "uploaded",
+            capturedAt = proof.createdAt,
+            uploadedAt = matching?.uploadedAt,
         )
     }
     val remaining = remoteByPath.values.filterNot { it.storagePath in matchedPaths }.map {
-        EvidencePhoto("remote:${it.storagePath}", it.stepIndex, null, it.storagePath, uploaded = true)
+        EvidencePhoto(
+            "remote:${it.storagePath}", it.stepIndex, null, it.storagePath,
+            uploaded = true, uploadedAt = it.uploadedAt,
+        )
     }
     return (photos + remaining).sortedBy { it.stepIndex }
 }
