@@ -1,5 +1,6 @@
 package com.sidequests.app.data.local
 
+import com.sidequests.app.data.photo.SavedEvidenceIndex
 import java.io.File
 import java.io.FileOutputStream
 import java.nio.file.Files
@@ -110,6 +111,7 @@ data class LexLocalState(
     val photoQuests: Map<String, PhotoQuestSnapshot> = emptyMap(),
     // Optional so outbox files written before this queue existed stay readable.
     val progressOps: List<PendingProgressOp> = emptyList(),
+    val evidenceIndexes: Map<String, SavedEvidenceIndex> = emptyMap(),
 )
 
 /** Small private outbox. All callers use Dispatchers.IO. State and events commit together. */
