@@ -310,19 +310,6 @@ fun ExplorerScreen(
             }
         }
         item {
-            Card(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
-                shape = RoundedCornerShape(20.dp),
-            ) {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("DISCOVER MORE", style = MaterialTheme.typography.labelMedium)
-                    Text("Discover a new category in three suggestions", style = MaterialTheme.typography.bodySmall)
-                    PrimaryButton("Try variety", onClick = { viewModel.navigate(com.sidequests.app.model.AppScreen.VarietyDiscovery) })
-                    PrimaryButton("Group challenges", onClick = { viewModel.navigate(com.sidequests.app.model.AppScreen.GroupChallenges) })
-                }
-            }
-        }
-        item {
             Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 18.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(modifier = Modifier.weight(1f)) {
@@ -370,6 +357,18 @@ fun ExplorerScreen(
                 onRequestLocation = onRequestLocation,
                 onRefresh = { viewModel.refreshContext(force = true) },
             )
+        }
+
+        item(key = "discover-more") {
+            Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Discover more", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    DiscoverShortcut("🔀", "Try variety", "Explore a new category",
+                        Modifier.weight(1f)) { viewModel.navigate(com.sidequests.app.model.AppScreen.VarietyDiscovery) }
+                    DiscoverShortcut("👥", "Group challenges", "Explore together",
+                        Modifier.weight(1f)) { viewModel.navigate(com.sidequests.app.model.AppScreen.GroupChallenges) }
+                }
+            }
         }
 
         difficultySuggestion?.let { suggestion ->
@@ -588,6 +587,29 @@ private fun ContextAwareCard(
             contextState.error?.let {
                 Text("Context fallback: $it", fontSize = 10.sp, color = MaterialTheme.colorScheme.error)
             }
+        }
+    }
+}
+
+@Composable
+private fun DiscoverShortcut(
+    emoji: String,
+    title: String,
+    subtitle: String,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    Card(
+        onClick = onClick,
+        modifier = modifier,
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+    ) {
+        Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(emoji, style = MaterialTheme.typography.headlineSmall)
+            Text(title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onPrimaryContainer)
+            Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onPrimaryContainer)
         }
     }
 }
