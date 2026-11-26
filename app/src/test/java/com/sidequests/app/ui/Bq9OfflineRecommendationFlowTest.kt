@@ -1,6 +1,7 @@
 package com.sidequests.app.ui
 
 import androidx.lifecycle.ViewModelStore
+import androidx.lifecycle.viewModelScope
 import com.sidequests.app.context.ContextManager
 import com.sidequests.app.context.LocationData
 import com.sidequests.app.context.LocationProvider
@@ -13,6 +14,8 @@ import com.sidequests.app.model.UserPreferences
 import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
@@ -31,11 +34,20 @@ class Bq9OfflineRecommendationFlowTest {
     @get:Rule val folder = TemporaryFolder()
     private val dispatcher = StandardTestDispatcher()
     private val models = ViewModelStore()
+    private val viewModelJobs = mutableListOf<Job>()
 
     @Before fun setup() { Dispatchers.setMain(dispatcher) }
     @After fun cleanup() {
-        models.clear()
-        Dispatchers.resetMain()
+        // Wait for cancelled ViewModel work (e.g. context reads on Dispatchers.IO) before
+        // restoring Main, or a late resume leaks into the next test class.
+        try {
+            runTest(dispatcher) {
+                models.clear()
+                viewModelJobs.joinAll()
+            }
+        } finally {
+            Dispatchers.resetMain()
+        }
     }
 
     @Test fun `skipping a recommendation queues event before any network send`() = runTest(dispatcher) {
@@ -70,6 +82,7 @@ class Bq9OfflineRecommendationFlowTest {
             scheduleLocalSync = { schedules++ },
         )
         models.put("bq9", vm)
+        viewModelJobs += requireNotNull(vm.viewModelScope.coroutineContext[Job])
         vm.attachAccount("alice")
         advanceUntilIdle()
         val before = schedules
