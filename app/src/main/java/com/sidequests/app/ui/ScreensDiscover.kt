@@ -3,6 +3,7 @@ package com.sidequests.app.ui
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import com.sidequests.app.model.AppScreen
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -453,6 +454,20 @@ fun ExplorerScreen(
                         color = Color.White.copy(alpha = .78f),
                         fontSize = 11.sp,
                         fontWeight = FontWeight.SemiBold,
+                    )
+                    // BQ14 (#87): tells the user Smart Picks are filtered and opens the view.
+                    val adaptation = viewModel.socialAdaptation(state)
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        text = if (adaptation.active) {
+                            "Adapted to your social comfort (${state.socialComfort.level.label}) · Change"
+                        } else {
+                            "Social comfort: ${state.socialComfort.level.label} · Adjust"
+                        },
+                        color = QuestAmber,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.clickable { viewModel.navigate(AppScreen.SocialComfort) },
                     )
                 }
             }

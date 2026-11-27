@@ -81,6 +81,8 @@ enum class AppScreen {
     Rating,
     GroupQuest,
     Profile,
+    /** BQ14 (Sprint 4, #87). */
+    SocialComfort,
 }
 
 data class SidequestsUiState(

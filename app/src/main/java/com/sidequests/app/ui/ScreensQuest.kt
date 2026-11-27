@@ -844,6 +844,18 @@ fun ProfileScreen(
             }
         }
         item {
+            // BQ14 (#87): entry point to the Social comfort view.
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween) {
+                Column(Modifier.weight(1f)) {
+                    Text("Social comfort", style = MaterialTheme.typography.titleMedium)
+                    Text("Level: ${state.socialComfort.level.label}", fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = .6f))
+                }
+                TextButton(onClick = { viewModel.navigate(AppScreen.SocialComfort) }) { Text("Adjust") }
+            }
+        }
+        item {
             Text("BADGES", fontSize = 10.sp, fontWeight = FontWeight.Black, color = MaterialTheme.colorScheme.onSurface.copy(alpha = .5f))
         }
         item {
