@@ -246,6 +246,8 @@ private fun AuthenticatedSidequestsContent(
                         viewModel,
                     )
 
+                    AppScreen.SocialComfort -> SocialComfortScreen(state, viewModel, deviceStatus.isOnline)
+
                     AppScreen.Profile -> ProfileScreen(
                         state = state,
                         viewModel = viewModel,
@@ -268,6 +270,7 @@ private fun AuthenticatedSidequestsContent(
                     AppScreen.QuestAlternatives,
                     AppScreen.Rating,
                     AppScreen.MissionHistory,
+                    AppScreen.SocialComfort,
                 ) && !(state.screen == AppScreen.QuestDetail && state.detailFromHistory)
             ) {
                 BottomBar(
