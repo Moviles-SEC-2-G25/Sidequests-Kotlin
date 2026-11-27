@@ -5,6 +5,7 @@ import android.content.Context
 import android.database.DatabaseUtils
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
+import android.os.Trace
 
 data class PendingTelemetryEvent(
     val id: Long,
@@ -21,8 +22,14 @@ data class PendingTelemetryEvent(
  * [TelemetryUploadWorker] uploads and deletes them when there is a connection.
  * One shared instance per process (SQLiteOpenHelper is thread-safe with a single instance).
  */
-class TelemetryStore private constructor(context: Context) :
-    SQLiteOpenHelper(context, DATABASE_NAME, null, DATABASE_VERSION) {
+class TelemetryStore internal constructor(context: Context, databaseName: String = DATABASE_NAME) :
+    SQLiteOpenHelper(context, databaseName, null, DATABASE_VERSION) {
+
+    init {
+        // Micro-optimization (Sprint 4): with write-ahead logging a commit only appends to the
+        // WAL file, and the upload worker can read the queue while the app keeps writing.
+        setWriteAheadLoggingEnabled(true)
+    }
 
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
@@ -44,15 +51,39 @@ class TelemetryStore private constructor(context: Context) :
     }
 
     fun insert(eventType: String, sessionId: String, metadataJson: String, createdAtMillis: Long): Long {
+        // Trace section: every insert shows up in Android Studio Profiler -> System Trace.
+        Trace.beginSection(TRACE_INSERT)
+        try {
+            return insertAndTrim(eventType, sessionId, metadataJson, createdAtMillis)
+        } finally {
+            Trace.endSection()
+        }
+    }
+
+    /**
+     * Micro-optimization (Sprint 4): insert and trim run in ONE transaction, so each event costs
+     * a single journal commit instead of two, and the trim is a primary-key range delete
+     * (see [TelemetryRetention]) instead of sorting the whole table on every insert.
+     */
+    private fun insertAndTrim(eventType: String, sessionId: String, metadataJson: String, createdAtMillis: Long): Long {
         val values = ContentValues().apply {
             put("event_type", eventType)
             put("session_id", sessionId)
             put("metadata", metadataJson)
             put("created_at", createdAtMillis)
         }
-        val id = writableDatabase.insert(TABLE, null, values)
-        trimTo(MAX_ROWS)
-        return id
+        val db = writableDatabase
+        db.beginTransactionNonExclusive()
+        try {
+            val id = db.insert(TABLE, null, values)
+            TelemetryRetention.deleteUpToId(id, MAX_ROWS)?.let { maxIdToDelete ->
+                db.delete(TABLE, "id <= ?", arrayOf(maxIdToDelete.toString()))
+            }
+            db.setTransactionSuccessful()
+            return id
+        } finally {
+            db.endTransaction()
+        }
     }
 
     fun oldest(limit: Int): List<PendingTelemetryEvent> =
@@ -86,18 +117,12 @@ class TelemetryStore private constructor(context: Context) :
 
     fun count(): Long = DatabaseUtils.queryNumEntries(readableDatabase, TABLE)
 
-    /** Keeps the queue bounded if the device stays offline for a very long time. */
-    private fun trimTo(maxRows: Int) {
-        writableDatabase.execSQL(
-            "DELETE FROM $TABLE WHERE id NOT IN (SELECT id FROM $TABLE ORDER BY id DESC LIMIT $maxRows)"
-        )
-    }
-
     companion object {
         private const val DATABASE_NAME = "sidequests_telemetry.db"
         private const val DATABASE_VERSION = 1
         private const val TABLE = "pending_events"
-        private const val MAX_ROWS = 500
+        internal const val MAX_ROWS = 500
+        internal const val TRACE_INSERT = "TelemetryStore.insert"
 
         @Volatile private var instance: TelemetryStore? = null
 

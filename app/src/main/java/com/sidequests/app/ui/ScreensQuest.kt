@@ -38,6 +38,7 @@ import androidx.compose.runtime.getValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -68,6 +69,8 @@ import com.sidequests.app.domain.SmartDifficultyAdvisor
 import com.sidequests.app.BuildConfig
 import com.sidequests.app.telemetry.AppModule
 import com.sidequests.app.telemetry.Bq1Telemetry
+import com.sidequests.app.telemetry.TelemetryStoreBenchmark
+import kotlinx.coroutines.launch
 import com.sidequests.app.ui.auth.PasswordChangeState
 import java.io.File
 
@@ -958,6 +961,10 @@ private fun ChangePasswordDialog(
 private fun Bq1DebugCard() {
     val pending by Bq1Telemetry.pendingCount.collectAsStateWithLifecycle()
     val lastResume by Bq1Telemetry.lastResume.collectAsStateWithLifecycle()
+    val benchResult by TelemetryStoreBenchmark.lastResult.collectAsStateWithLifecycle()
+    val benchRunning by TelemetryStoreBenchmark.running.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text("BQ1 TELEMETRY (DEBUG)", fontSize = 10.sp, fontWeight = FontWeight.Black, color = MaterialTheme.colorScheme.onSurface.copy(alpha = .5f))
         Text("Events waiting to upload: $pending", fontSize = 12.sp)
@@ -980,6 +987,14 @@ private fun Bq1DebugCard() {
                 onClick = { throw IllegalStateException("Simulated BQ1 crash from Profile") },
                 selectedColor = MaterialTheme.colorScheme.error,
             )
+            ChoiceChip(
+                text = if (benchRunning) "Benchmark running…" else "Run SQLite queue benchmark",
+                selected = false,
+                onClick = { if (!benchRunning) scope.launch { TelemetryStoreBenchmark.run(context) } },
+            )
+        }
+        benchResult?.let {
+            Text("Queue benchmark: $it", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = .6f))
         }
     }
 }
