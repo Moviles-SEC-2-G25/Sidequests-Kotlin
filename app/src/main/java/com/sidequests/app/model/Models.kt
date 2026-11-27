@@ -82,6 +82,8 @@ enum class AppScreen {
     GroupQuest,
     Profile,
     OfflinePack,
+    /** BQ14 (Sprint 4, #87). */
+    SocialComfort,
 }
 
 data class SidequestsUiState(
@@ -133,4 +135,8 @@ data class SidequestsUiState(
     /** Smart feature: part of the day for which the smart time was already applied this session. */
     val smartTimeAppliedFor: com.sidequests.app.context.TimeOfDay? = null,
     val smartTimeHint: String? = null,
+    /** BQ14: social comfort level and "Adapt my Smart Picks" choice of the signed-in account. */
+    val socialComfort: com.sidequests.app.domain.SocialComfortSettings = com.sidequests.app.domain.SocialComfortSettings(),
+    /** BQ14: stable experiment arm of the account (sets the default of the adaptation switch). */
+    val socialArm: String? = null,
 )

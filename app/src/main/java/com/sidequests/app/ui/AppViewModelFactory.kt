@@ -75,6 +75,9 @@ class AppViewModelFactory(
                     com.sidequests.app.data.history.SupabaseHistoryRemote(SupabaseProvider.client),
                 )
             } else null,
+            // BQ14 (#86): comfort settings per account + events through the durable telemetry queue.
+            socialComfortStore = com.sidequests.app.data.socialcomfort.DataStoreSocialComfortStore(applicationContext),
+            socialComfortEvents = { type, metadata -> com.sidequests.app.telemetry.Bq1Telemetry.enqueueEvent(type, metadata) },
         ) as T
     }
 }

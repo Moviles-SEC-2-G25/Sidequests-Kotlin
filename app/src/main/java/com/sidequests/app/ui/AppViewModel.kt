@@ -80,6 +80,16 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.MutableStateFlow
+import com.sidequests.app.data.socialcomfort.SocialComfortReport
+import com.sidequests.app.data.socialcomfort.SocialComfortRepository
+import com.sidequests.app.data.socialcomfort.SocialComfortStore
+import com.sidequests.app.domain.ComfortLevel
+import com.sidequests.app.domain.SocialAdaptation
+import com.sidequests.app.domain.SocialComfortAdvisor
+import com.sidequests.app.domain.SocialComfortSettings
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
@@ -129,7 +139,21 @@ class AppViewModel(
     val missionHistorySource: com.sidequests.app.data.history.HistorySource? = null,
     val attemptEvidenceRepository: com.sidequests.app.data.photo.AttemptEvidenceRepository? = null,
     private val offlinePackManager: OfflinePackManager? = null,
+    /** BQ14 (#86): per-account comfort settings in DataStore (null in unit tests). */
+    private val socialComfortStore: SocialComfortStore? = null,
+    /** BQ14 (#86): durable event queue (Bq1Telemetry.enqueueEvent in the app, no-op in tests). */
+    private val socialComfortEvents: (String, JsonObject) -> Unit = { _, _ -> },
+    socialComfortRepository: SocialComfortRepository? = null,
 ) : ViewModel() {
+
+    /** BQ14 (#86): history + cached insights for the Social comfort view. */
+    private val socialComfortRepo: SocialComfortRepository? =
+        socialComfortRepository ?: missionHistorySource?.let { SocialComfortRepository(it) }
+    private val _socialComfortView = MutableStateFlow(SocialComfortViewState())
+    val socialComfortView: StateFlow<SocialComfortViewState> = _socialComfortView.asStateFlow()
+    private var socialComfortJob: Job? = null
+    /** Account whose comfort settings were restored, so defaults never overwrite saved ones. */
+    @Volatile private var socialComfortOwner: String? = null
 
     private val analyticsSessionId = UUID.randomUUID().toString()
     private val recommendationEngine = ContextAwareRecommendationEngine()
@@ -310,6 +334,9 @@ class AppViewModel(
         (recommendationRepository as? CachedRecommendationRepository)?.useAccountScope(null)
         bq8RecordedExposures.clear()
         historyOwner = null
+        socialComfortOwner = null
+        socialComfortJob?.cancel()
+        _socialComfortView.value = SocialComfortViewState()
         attachedUserId = null
         accountGeneration += 1
         photoObserver?.cancel()
@@ -328,6 +355,7 @@ class AppViewModel(
         photoObserver?.cancel()
         _uiState.value = freshAccountState()
         restoreHistory(userId)
+        restoreSocialComfort(userId)
         val store = localStore ?: run {
             _uiState.update { it.copy(accountUserId = userId) }
             return
@@ -693,10 +721,16 @@ class AppViewModel(
         // BQ8: the backend controls the order of experimental recommendations.
         // Applying context-aware re-ranking here would display a different order
         // than the server's rank_position and corrupt the comparison of arms.
+        val adaptation = socialAdaptation(state)
         if (state.remoteRecommendationIds.isNotEmpty()) {
-            return Bq8RecommendationPresentation.orderedQuests(
-                state.remoteRecommendationIds,
-                repository.allQuests(),
+            // BQ14: final client filter; it removes, never reorders, so BQ8's order is kept.
+            return SocialComfortAdvisor.adapt(
+                Bq8RecommendationPresentation.orderedQuests(
+                    state.remoteRecommendationIds,
+                    repository.allQuests(),
+                ),
+                state.socialComfort.level,
+                adaptation.active,
             )
         }
 
@@ -709,12 +743,16 @@ class AppViewModel(
         val local = repository.recommendations(
             availableMinutes = state.availableTime,
             preferences = state.preferences,
-            skippedIds = state.skippedQuestIds,
+            skippedIds = state.skippedQuestIds + socialExclusions(state),
             completedIds = completedIds,
             inProgressIds = inProgressIds,
         )
         // Context adaptation remains available for offline/sample fallback.
-        return recommendationEngine.apply(local, _contextState.value.context)
+        return SocialComfortAdvisor.adapt(
+            recommendationEngine.apply(local, _contextState.value.context),
+            state.socialComfort.level,
+            adaptation.active,
+        )
     }
 
     /** BQ8 records an impression only when a current RPC-ranked card is in
@@ -808,7 +846,8 @@ class AppViewModel(
             remote.recommend(
                 availableMinutes = state.availableTime,
                 preferences = state.preferences,
-                excludedQuestIds = state.skippedQuestIds,
+                // BQ14: quests above the comfort level are excluded on the server too.
+                excludedQuestIds = state.skippedQuestIds + socialExclusions(state),
                 limit = 3,
             )
                 .onSuccess { results ->
@@ -859,6 +898,101 @@ class AppViewModel(
                 }
         }
     }
+    // ---------------------------------------------------------------- BQ14 social comfort (#86)
+
+    fun socialAdaptation(state: SidequestsUiState = _uiState.value): SocialAdaptation =
+        SocialComfortAdvisor.adaptation(state.socialComfort, state.socialArm ?: SocialComfortAdvisor.ARM_CONTROL)
+
+    private fun socialExclusions(state: SidequestsUiState): Set<String> =
+        if (socialAdaptation(state).active) {
+            SocialComfortAdvisor.excludedIds(repository.allQuests(), state.socialComfort.level)
+        } else emptySet()
+
+    /** Restores the account's comfort settings, then records one BQ14 session event. */
+    private fun restoreSocialComfort(userId: String) {
+        _uiState.update { it.copy(socialArm = SocialComfortAdvisor.experimentArm(userId)) }
+        viewModelScope.launch {
+            val saved = socialComfortStore?.let { store -> runCatching { store.load(userId) }.getOrNull() }
+                ?: SocialComfortSettings()
+            withTimeoutOrNull(5_000) { _uiState.first { it.accountUserId == userId } }
+            if (attachedUserId != userId) return@launch
+            _uiState.update { it.copy(socialComfort = saved, socialArm = SocialComfortAdvisor.experimentArm(userId)) }
+            socialComfortOwner = userId
+            recordSocialComfortEvent(EVENT_BQ14_SESSION, change = null)
+            if (socialAdaptation().active) refreshRecommendations()
+        }
+    }
+
+    fun setSocialComfort(level: ComfortLevel) {
+        val current = _uiState.value.socialComfort
+        if (current.level == level) return
+        updateSocialComfort(current.copy(level = level), change = "level")
+    }
+
+    fun setSocialAdaptation(enabled: Boolean) {
+        val current = _uiState.value.socialComfort
+        if (current.adaptChoice == enabled) return
+        updateSocialComfort(current.copy(adaptChoice = enabled), change = "adaptation")
+    }
+
+    private fun updateSocialComfort(settings: SocialComfortSettings, change: String) {
+        val owner = socialComfortOwner
+        _uiState.update { it.copy(socialComfort = settings, remoteRecommendationIds = emptyList()) }
+        // Saved on the phone first: the choice applies immediately, online or offline.
+        if (owner != null && owner == attachedUserId) {
+            socialComfortStore?.let { store -> viewModelScope.launch { runCatching { store.save(owner, settings) } } }
+        }
+        recordSocialComfortEvent(EVENT_BQ14_CHANGED, change)
+        refreshRecommendations()
+    }
+
+    private fun recordSocialComfortEvent(eventType: String, change: String?) {
+        val state = _uiState.value
+        val userId = state.accountUserId ?: return
+        val adaptation = socialAdaptation(state)
+        socialComfortEvents(
+            eventType,
+            buildJsonObject {
+                put("bq", "BQ14")
+                put("arm", state.socialArm ?: SocialComfortAdvisor.experimentArm(userId))
+                put("comfort", state.socialComfort.level.name.lowercase())
+                put("low_willingness", state.socialComfort.level.lowWillingness)
+                put("adaptation_active", adaptation.active)
+                put("adaptation_source", adaptation.source.name.lowercase())
+                put("online", _deviceStatus.value.isOnline)
+                put("app_version", BuildConfig.VERSION_NAME)
+                put("account_user_id", userId)
+                if (change != null) put("change", change)
+            },
+        )
+    }
+
+    /** Loads the bitácora (online or saved) and the cached insights for the Social comfort view. */
+    fun refreshSocialComfortInsights() {
+        val repo = socialComfortRepo
+        val userId = _uiState.value.accountUserId
+        if (repo == null || userId == null) {
+            _socialComfortView.value = SocialComfortViewState(loading = false, report = null, unavailable = true)
+            return
+        }
+        socialComfortJob?.cancel()
+        val online = _deviceStatus.value.isOnline
+        val exposures = repository.allQuests().associate { it.id to com.sidequests.app.domain.SocialExposure.of(it) }
+        _socialComfortView.update { it.copy(loading = true, error = null) }
+        socialComfortJob = viewModelScope.launch {
+            try {
+                val report = repo.report(userId, online, exposures)
+                if (attachedUserId != userId) return@launch
+                _socialComfortView.value = SocialComfortViewState(loading = false, report = report, online = online)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                failureReporter.report(AppModule.RECOMMENDATIONS, error, "BQ14 history unavailable")
+                _socialComfortView.update { it.copy(loading = false, error = "Could not read your history. Try again.") }
+            }
+        }
+    }
+
     fun navigate(screen: AppScreen) {
         if (screen != AppScreen.QuestAlternatives) alternativeJob?.cancel()
         if (screen != AppScreen.QuestDetail) openedFromSmartPicksId = null
@@ -1872,5 +2006,17 @@ class AppViewModel(
         const val ADDRESS_OFFLINE_MESSAGE = "Address unavailable offline"
         const val ADDRESS_UNAVAILABLE_MESSAGE = "Address unavailable right now"
         const val QUEUED_OFFLINE_MESSAGE = "Saved on this device. It will sync when you're back online."
+        const val EVENT_BQ14_SESSION = "bq14_social_comfort_session"
+        const val EVENT_BQ14_CHANGED = "bq14_social_comfort_changed"
     }
 }
+
+/** BQ14 (#87): what the Social comfort view shows about the user's history. */
+data class SocialComfortViewState(
+    val loading: Boolean = false,
+    val report: SocialComfortReport? = null,
+    val online: Boolean = true,
+    val error: String? = null,
+    /** No backend configured (or signed out): there is no history to read. */
+    val unavailable: Boolean = false,
+)
