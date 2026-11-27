@@ -17,7 +17,7 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
 
-/** Owned by the account's bitácora route, so leaving it also releases the cache. */
+/** Owned by the account's Mission History route, so leaving it also releases the cache. */
 internal class EvidenceThumbnails {
     private data class Key(val source: String, val width: Int, val height: Int)
 

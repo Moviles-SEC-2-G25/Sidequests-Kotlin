@@ -57,6 +57,20 @@ class MissionHistoryTest {
         assertEquals("cafe con nandu",normalizeHistorySearch("  Café   CON  Ñandú "))
     }
 
+    @Test fun categoryLabelsAreEnglishAndSearchRemainsCompatible() {
+        val expected = mapOf(
+            "outdoors" to "Outdoors", "food" to "Food", "art" to "Art",
+            "learning" to "Learning", "mindfulness" to "Mindfulness",
+            "movement" to "Movement", "social" to "Social",
+        )
+        expected.forEach { (category, label) ->
+            assertEquals(label, historyCategoryLabel(category))
+        }
+        assertEquals("Food", historyCategoryLabel("FOOD"))
+        assertEquals(listOf("uq-4","uq-1"), ids(run(query="FOOD")))
+        assertEquals(listOf("uq-3","uq-5"), ids(run(query="Mindfulness")))
+    }
+
     @Test fun dateUsesStatusTimestampAndLocalZoneAndStableId() {
         val a = attempt("a","cafe","completed","2026-11-01T10:00:00Z")
             .copy(completedAt="2026-11-02T02:00:00Z")
