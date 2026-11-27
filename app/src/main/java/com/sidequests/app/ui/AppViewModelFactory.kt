@@ -1,20 +1,20 @@
 package com.sidequests.app.ui
 
 import android.content.Context
-import com.sidequests.app.BuildConfig
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
-import com.sidequests.app.data.LocalQuestCatalogueStore
-import com.sidequests.app.data.InMemorySidequestsRepository
-import com.sidequests.app.data.SidequestsRepository
-import com.sidequests.app.data.SupabaseSidequestsRepository
-import com.sidequests.app.data.local.LexSyncWorker
-import com.sidequests.app.data.photo.AttemptEvidenceRepository
-import com.sidequests.app.data.offline.OfflinePackManager
-import com.sidequests.app.data.remote.SupabaseProvider
+import com.sidequests.app.BuildConfig
 import com.sidequests.app.context.AddressProvider
 import com.sidequests.app.context.ContextManager
 import com.sidequests.app.context.UserContext
+import com.sidequests.app.data.InMemorySidequestsRepository
+import com.sidequests.app.data.LocalQuestCatalogueStore
+import com.sidequests.app.data.SidequestsRepository
+import com.sidequests.app.data.SupabaseSidequestsRepository
+import com.sidequests.app.data.local.LexSyncWorker
+import com.sidequests.app.data.offline.OfflinePackManager
+import com.sidequests.app.data.photo.AttemptEvidenceRepository
+import com.sidequests.app.data.remote.SupabaseProvider
 import com.sidequests.app.data.settings.SettingsStore
 import com.sidequests.app.telemetry.FailureReporter
 import java.io.File
@@ -33,6 +33,22 @@ class AppViewModelFactory(
         require(modelClass.isAssignableFrom(AppViewModel::class.java)) {
             "Unknown ViewModel class: ${modelClass.name}"
         }
+
+        val localStore = LexSyncWorker.store(applicationContext)
+        val catalogueStore = if (SupabaseProvider.isConfigured) {
+            LocalQuestCatalogueStore(File(applicationContext.filesDir, "quest_catalogue.json"))
+        } else null
+        val repository: SidequestsRepository = if (SupabaseProvider.isConfigured) {
+            SupabaseSidequestsRepository(SupabaseProvider.client, catalogueStore)
+        } else {
+            InMemorySidequestsRepository()
+        }
+        val offlinePackManager = OfflinePackManager(
+            repository = repository,
+            manifestFile = File(applicationContext.filesDir, "offline_pack_manifest.json"),
+            catalogueStore = catalogueStore,
+        )
+
         return AppViewModel(
             contextManager = contextManager,
             repository = repository,
