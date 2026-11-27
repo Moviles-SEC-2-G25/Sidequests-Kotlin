@@ -68,8 +68,9 @@ class OfflinePackManager(
     suspend fun addQuest(questId: String, isOnline: Boolean) = mutex.withLock {
         require(questId.isNotBlank()) { "Quest ID cannot be blank." }
         val ids = withContext(Dispatchers.IO) {
-            val updated = readManifest().copy(
-                selectedQuestIds = (readManifest().selectedQuestIds + questId).distinct(),
+            val manifest = readManifest()
+            val updated = manifest.copy(
+                selectedQuestIds = (manifest.selectedQuestIds + questId).distinct(),
             )
             writeManifest(updated)
             updated.selectedQuestIds
@@ -83,8 +84,9 @@ class OfflinePackManager(
 
     suspend fun removeQuest(questId: String) = mutex.withLock {
         val ids = withContext(Dispatchers.IO) {
-            val updated = readManifest().copy(
-                selectedQuestIds = readManifest().selectedQuestIds.filterNot { it == questId },
+            val manifest = readManifest()
+            val updated = manifest.copy(
+                selectedQuestIds = manifest.selectedQuestIds.filterNot { it == questId },
             )
             writeManifest(updated)
             updated.selectedQuestIds
