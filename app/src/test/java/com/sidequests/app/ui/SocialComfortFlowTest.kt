@@ -33,8 +33,20 @@ class SocialComfortFlowTest {
     private val dispatcher = StandardTestDispatcher()
     private val models = ViewModelStore()
 
+    private val created = mutableListOf<AppViewModel>()
+
     @Before fun setUp() = Dispatchers.setMain(dispatcher)
     @After fun tearDown() {
+        // AppViewModel reads the context on the real Dispatchers.IO when it is created. Wait for
+        // that read to come back to Main before resetting it; otherwise the late resume throws
+        // outside this test and is reported as an uncaught exception in the next test class.
+        created.forEach { vm ->
+            repeat(300) {
+                dispatcher.scheduler.advanceUntilIdle()
+                if (!vm.contextState.value.loading) return@forEach
+                Thread.sleep(10)
+            }
+        }
         models.clear()
         Dispatchers.resetMain()
     }
@@ -73,7 +85,10 @@ class SocialComfortFlowTest {
             photoProofRepository = null,
             socialComfortStore = store,
             socialComfortEvents = { type, metadata -> events += type to metadata },
-        ).also { models.put("vm-${System.nanoTime()}", it) }
+        ).also {
+            models.put("vm-${System.nanoTime()}", it)
+            created += it
+        }
     }
 
     @Test fun lowComfortHidesGroupQuestsOnServerAndClientAndRecordsEvents() = runTest(dispatcher) {
