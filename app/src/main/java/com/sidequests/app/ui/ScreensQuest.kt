@@ -837,6 +837,15 @@ fun ProfileScreen(
             )
         }
         item {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text("OFFLINE ACCESS", fontSize = 10.sp, fontWeight = FontWeight.Black, color = MaterialTheme.colorScheme.onSurface.copy(alpha = .5f))
+                Text("Keep selected quests and their steps available when you lose your connection.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = .65f))
+                TextButton(onClick = { viewModel.navigate(AppScreen.OfflinePack) }) {
+                    Text("Manage Offline Pack  →")
+                }
+            }
+        }
+        item {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween) {
                 Text("Mission History", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
