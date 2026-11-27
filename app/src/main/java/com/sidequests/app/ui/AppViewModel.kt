@@ -125,6 +125,7 @@ class AppViewModel(
     /** BQ1 (#22): non-fatal module failures are reported here (no-op by default/in tests). */
     private val failureReporter: FailureReporter = FailureReporter.NONE,
     val missionHistorySource: com.sidequests.app.data.history.HistorySource? = null,
+    val attemptEvidenceRepository: com.sidequests.app.data.photo.AttemptEvidenceRepository? = null,
 ) : ViewModel() {
 
     private val analyticsSessionId = UUID.randomUUID().toString()
@@ -361,19 +362,6 @@ class AppViewModel(
                 if (attachedUserId == userId) _uiState.update { it.copy(accountUserId = userId, localStateError = "Could not read your saved setup and photos. Try again.") }
             }
         }
-    }
-
-    internal suspend fun readLocalAttemptEvidence(
-        userId: String,
-        attemptId: String,
-    ): List<StoredPhotoProof> {
-        if (attachedUserId != userId) return emptyList()
-        val photos = withContext(localIoDispatcher) {
-            localStore?.read()?.photos.orEmpty()
-                .filter { it.userId == userId && it.attemptId == attemptId }
-                .sortedWith(compareBy(StoredPhotoProof::stepIndex, StoredPhotoProof::createdAt))
-        }
-        return if (attachedUserId == userId) photos else emptyList()
     }
 
     private fun applyStoredPhotos(saved: LexLocalState, userId: String) {
@@ -860,6 +848,9 @@ class AppViewModel(
         openedFromSmartPicksId = if (fromSmartPicks) questId else null
         _uiState.update { it.copy(selectedQuestId = questId, screen = AppScreen.QuestDetail, detailFromHistory = false, questAlternatives = null) }
     }
+
+    internal fun evidenceQuestSteps(questId: String): List<com.sidequests.app.model.QuestStep> =
+        repository.allQuests().firstOrNull { it.id == questId }?.steps.orEmpty()
 
     fun openQuestFromHistory(questId: String): Boolean {
         if (repository.allQuests().none { it.id == questId }) return false

@@ -34,6 +34,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -86,11 +87,18 @@ fun MissionHistoryRoute(state: SidequestsUiState, viewModel: AppViewModel, onlin
     LaunchedEffect(controller, online) { controller.connectivityChanged(online) }
     val historyState by controller.state.collectAsStateWithLifecycle()
     var evidenceEntry by remember(userId) { mutableStateOf<HistoryEntry?>(null) }
-    val selectedEvidence = evidenceEntry
-    if (selectedEvidence != null) {
+    val thumbnails = remember(userId) { EvidenceThumbnails() }
+    val selectedEvidence = evidenceEntry?.takeIf { it.attempt.userId == userId }
+    val evidenceRepository = viewModel.attemptEvidenceRepository
+    if (selectedEvidence != null && evidenceRepository != null) {
         val back = { evidenceEntry = null }
         BackHandler(onBack = back)
-        AttemptEvidenceScreen(selectedEvidence, viewModel, onBack = back)
+        key(userId, selectedEvidence.attempt.id) {
+            AttemptEvidenceScreen(
+                selectedEvidence, viewModel.evidenceQuestSteps(selectedEvidence.attempt.questId),
+                evidenceRepository, thumbnails, online, onBack = back,
+            )
+        }
     } else if (state.screen == AppScreen.QuestDetail) {
         BackHandler { viewModel.navigate(AppScreen.MissionHistory) }
         QuestDetailScreen(viewModel.selectedQuest(), viewModel,
@@ -100,7 +108,7 @@ fun MissionHistoryRoute(state: SidequestsUiState, viewModel: AppViewModel, onlin
         BackHandler(onBack = back)
         MissionHistoryScreen(historyState.copy(offline = !online), controller::setQuery, controller::setFilter,
             controller::refresh, back, viewModel::openQuestFromHistory,
-            onOpenEvidence = { evidenceEntry = it })
+            onOpenEvidence = if (evidenceRepository != null) ({ evidenceEntry = it }) else null)
     }
 }
 
@@ -113,7 +121,7 @@ fun MissionHistoryScreen(
     onRefresh: () -> Unit,
     onBack: () -> Unit,
     onOpen: (String) -> Boolean,
-    onOpenEvidence: (HistoryEntry) -> Unit,
+    onOpenEvidence: ((HistoryEntry) -> Unit)?,
 ) {
     var detailError by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxSize()) {
@@ -213,7 +221,7 @@ fun MissionHistoryScreen(
                             MissionHistoryCard(
                                 entry,
                                 onClick = { detailError = !onOpen(entry.attempt.questId) },
-                                onOpenEvidence = { onOpenEvidence(entry) },
+                                onOpenEvidence = onOpenEvidence?.let { open -> { open(entry) } },
                             )
                         }
                     }
@@ -251,7 +259,7 @@ fun MissionHistoryScreen(
 @Composable private fun MissionHistoryCard(
     entry: HistoryEntry,
     onClick: () -> Unit,
-    onOpenEvidence: () -> Unit,
+    onOpenEvidence: (() -> Unit)?,
 ) {
     val quest = entry.quest
     val attempt = entry.attempt
@@ -287,8 +295,8 @@ fun MissionHistoryScreen(
                 }
                 entry.steps?.let { Text("🚶 " + count(it,"paso","pasos"), style = MaterialTheme.typography.bodySmall) }
                 if (entry.pending) Text("☁ Pendiente de sincronizar", style = MaterialTheme.typography.bodySmall)
-                if (attempt.status == "completed" || attempt.status == "abandoned") {
-                    TextButton(onClick = onOpenEvidence) { Text("Ver evidencias") }
+                if (onOpenEvidence != null && (attempt.status == "completed" || attempt.status == "abandoned")) {
+                    TextButton(onClick = onOpenEvidence) { Text("View evidence") }
                 }
             }
             if (quest != null) Text("›", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 22.sp)
