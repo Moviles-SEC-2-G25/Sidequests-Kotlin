@@ -1,6 +1,7 @@
 package com.sidequests.app.ui
 
 import android.content.Context
+import com.sidequests.app.BuildConfig
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import com.sidequests.app.data.LocalQuestCatalogueStore
@@ -8,6 +9,7 @@ import com.sidequests.app.data.InMemorySidequestsRepository
 import com.sidequests.app.data.SidequestsRepository
 import com.sidequests.app.data.SupabaseSidequestsRepository
 import com.sidequests.app.data.local.LexSyncWorker
+import com.sidequests.app.data.photo.AttemptEvidenceRepository
 import com.sidequests.app.data.offline.OfflinePackManager
 import com.sidequests.app.data.remote.SupabaseProvider
 import com.sidequests.app.context.AddressProvider
@@ -31,27 +33,18 @@ class AppViewModelFactory(
         require(modelClass.isAssignableFrom(AppViewModel::class.java)) {
             "Unknown ViewModel class: ${modelClass.name}"
         }
-
-        val catalogueStore = LocalQuestCatalogueStore(
-            File(applicationContext.filesDir, "quest_catalogue.json"),
-        )
-        val repository: SidequestsRepository = if (SupabaseProvider.isConfigured) {
-            SupabaseSidequestsRepository(SupabaseProvider.client, catalogueStore)
-        } else {
-            InMemorySidequestsRepository()
-        }
-        val offlinePackManager = OfflinePackManager(
-            repository = repository,
-            manifestFile = File(applicationContext.filesDir, "offline_pack.json"),
-            catalogueStore = catalogueStore.takeIf { SupabaseProvider.isConfigured },
-        )
-
         return AppViewModel(
             contextManager = contextManager,
             repository = repository,
             alternativeContextReader = { alternativeContextOverride ?: contextManager.readContext() },
             alternativeContextSimulated = alternativeContextOverride != null,
-            localStore = LexSyncWorker.store(applicationContext),
+            localStore = localStore,
+            attemptEvidenceRepository = AttemptEvidenceRepository(
+                store = localStore,
+                photoDirectory = File(applicationContext.filesDir, "quest-proofs"),
+                client = if (SupabaseProvider.isConfigured) SupabaseProvider.client else null,
+                bucket = BuildConfig.SUPABASE_QUEST_PROOFS_BUCKET,
+            ),
             scheduleLocalSync = { userId -> LexSyncWorker.schedule(applicationContext, userId) },
             retryLocalSync = { userId -> LexSyncWorker.schedule(applicationContext, userId, retryNow = true) },
             addressProvider = addressProvider,

@@ -66,7 +66,7 @@ class NominatimAddressProvider(
             connectTimeout = 7_000
             readTimeout = 7_000
             setRequestProperty("User-Agent", userAgent)
-            setRequestProperty("Accept-Language", "es,en")
+            setRequestProperty("Accept-Language", "en")
         }
         return try {
             if (connection.responseCode !in 200..299) return null

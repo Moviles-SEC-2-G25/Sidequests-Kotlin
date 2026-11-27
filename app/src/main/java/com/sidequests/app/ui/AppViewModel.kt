@@ -57,6 +57,8 @@ import com.sidequests.app.data.recommendation.CachedRecommendationRepository
 import com.sidequests.app.data.recommendation.SupabaseRecommendationRepository
 import com.sidequests.app.model.AppScreen
 import com.sidequests.app.model.LocationMode
+import com.sidequests.app.data.analytics.Bq11Attempt
+import com.sidequests.app.data.analytics.Bq11Observation
 import com.sidequests.app.model.AbandonmentReason
 import com.sidequests.app.model.Quest
 import com.sidequests.app.model.QuestDifficulty
@@ -125,6 +127,7 @@ class AppViewModel(
     /** BQ1 (#22): non-fatal module failures are reported here (no-op by default/in tests). */
     private val failureReporter: FailureReporter = FailureReporter.NONE,
     val missionHistorySource: com.sidequests.app.data.history.HistorySource? = null,
+    val attemptEvidenceRepository: com.sidequests.app.data.photo.AttemptEvidenceRepository? = null,
     private val offlinePackManager: OfflinePackManager? = null,
 ) : ViewModel() {
 
@@ -143,6 +146,64 @@ class AppViewModel(
      * Without a local store (unit tests, no backend) the previous direct calls are used.
      */
     private val progressQueueEnabled: Boolean get() = localStore != null && progressRepository != null
+    private val bq11Observation = Bq11Observation()
+    private val _bq11Enrollment = MutableStateFlow<Bq11Attempt?>(null)
+    internal val bq11Enrollment = _bq11Enrollment.asStateFlow()
+
+    internal fun bq11Attempt(quest: Quest): Bq11Attempt? {
+        val state = _uiState.value
+        if (!progressQueueEnabled || analyticsRepository == null || quest.location != LocationMode.Gps ||
+            quest.isGroup || state.screen != AppScreen.ActiveQuest || state.activeQuestId != quest.id ||
+            activeNearbyQuestId() != quest.id) return null
+        val user = attachedUserId ?: return null
+        return state.attemptIdByQuest[quest.id]?.let { Bq11Attempt(user, it) }
+    }
+
+    internal fun setBq11Sharing(attempt: Bq11Attempt, enabled: Boolean) {
+        if (enabled && bq11Attempt(activeQuest()) != attempt) return
+        if (!enabled && bq11Observation.attempt != attempt) return
+        resetBq11(if (enabled) attempt else null)
+    }
+
+    internal fun observeBq11(attempt: Bq11Attempt, block: String?, at: java.time.Instant, elapsed: Long) {
+        if (bq11Attempt(activeQuest()) == attempt) bq11Observation.observe(attempt, block, at, elapsed)
+    }
+
+    internal fun pauseBq11(attempt: Bq11Attempt) = bq11Observation.pause(attempt)
+
+    private fun resetBq11(attempt: Bq11Attempt? = null) {
+        bq11Observation.select(attempt)
+        _bq11Enrollment.value = attempt
+    }
+
+    private fun attachBq11Evidence(op: PendingProgressOp): PendingProgressOp {
+        if (!op.completed) return op
+        val scope = Bq11Attempt(op.userId, op.attemptId)
+        if (bq11Observation.attempt != scope) return op
+        val dwell = bq11Observation.finish(scope, java.time.Instant.parse(op.occurredAt))
+        _bq11Enrollment.value = null
+        val events = dwell.map { visit ->
+            val eventId = UUID.randomUUID().toString()
+            PendingAnalyticsEvent(
+                id = eventId,
+                userId = op.userId,
+                journeyId = analyticsSessionId,
+                eventType = "bq11_commercial_block_completed",
+                occurredAt = op.occurredAt,
+                questId = op.questId,
+                metadata = buildJsonObject {
+                    put("event_id", eventId)
+                    put("schema_version", 1)
+                    put("platform", "kotlin")
+                    put("attempt_id", op.attemptId)
+                    put("block_id", visit.blockId)
+                    put("weekend_start", visit.weekend.toString())
+                    put("observed_ms", visit.millis)
+                },
+            )
+        }
+        return op.copy(confirmedEvents = op.confirmedEvents + events)
+    }
     private val journeyMutex = Mutex()
     private val photoMutex = Mutex()
     private val _uiState = MutableStateFlow(SidequestsUiState())
@@ -245,6 +306,7 @@ class AppViewModel(
     }
 
     fun detachAccount() {
+        resetBq11()
         (recommendationRepository as? CachedRecommendationRepository)?.useAccountScope(null)
         bq8RecordedExposures.clear()
         historyOwner = null
@@ -260,6 +322,7 @@ class AppViewModel(
         historyOwner = null
         (recommendationRepository as? CachedRecommendationRepository)?.useAccountScope(userId)
         bq8RecordedExposures.clear()
+        resetBq11()
         attachedUserId = userId
         accountGeneration += 1
         photoObserver?.cancel()
@@ -810,6 +873,9 @@ class AppViewModel(
         _uiState.update { it.copy(selectedQuestId = questId, screen = AppScreen.QuestDetail, detailFromHistory = false, questAlternatives = null) }
     }
 
+    internal fun evidenceQuestSteps(questId: String): List<com.sidequests.app.model.QuestStep> =
+        repository.allQuests().firstOrNull { it.id == questId }?.steps.orEmpty()
+
     fun openQuestFromHistory(questId: String): Boolean {
         if (repository.allQuests().none { it.id == questId }) return false
         alternativeJob?.cancel()
@@ -1231,6 +1297,7 @@ class AppViewModel(
 
         val attemptId = _uiState.value.attemptIdByQuest[questId] ?: return
         val op = progressOp(PendingProgressOp.PROGRESS, questId, attemptId, nextStep, nextCompleted, completed)
+            ?.let(::attachBq11Evidence)
         persistActiveQuestProgress(questId, attemptId, _uiState.value.progressByQuest.getValue(questId), closed = completed, op = op)
         if (op != null) {
             showQueuedProgress(if (completed) "Saving completed quest…" else "Saving progress…")
