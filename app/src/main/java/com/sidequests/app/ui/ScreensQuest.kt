@@ -270,6 +270,8 @@ fun ActiveQuestScreen(
     val allDone = progress.completedSteps.size >= quest.steps.size
     val deviceStatus by viewModel.deviceStatus.collectAsStateWithLifecycle()
     val appState by viewModel.uiState.collectAsStateWithLifecycle()
+    val researchAttempt = viewModel.bq11Attempt(quest)
+    if (researchAttempt != null) ObserveBq11Sharing(researchAttempt, viewModel)
 
     LazyColumn(
         modifier = modifier.fillMaxSize().background(MaterialTheme.colorScheme.background),
@@ -313,6 +315,9 @@ fun ActiveQuestScreen(
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = .62f),
                 )
             }
+        }
+        researchAttempt?.let { attempt ->
+            item(key = "bq11-research") { Bq11Sharing(attempt, viewModel) }
         }
         items(quest.steps.indices.toList()) { index ->
             val step = quest.steps[index]
