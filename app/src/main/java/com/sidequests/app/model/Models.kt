@@ -81,6 +81,7 @@ enum class AppScreen {
     Rating,
     GroupQuest,
     Profile,
+    OfflinePack,
     /** BQ14 (Sprint 4, #87). */
     SocialComfort,
 }

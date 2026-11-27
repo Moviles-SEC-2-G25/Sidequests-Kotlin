@@ -24,6 +24,8 @@ import com.sidequests.app.context.DeviceStatus
 import com.sidequests.app.context.LocationData
 import com.sidequests.app.context.UserContext
 import com.sidequests.app.context.timeOfDayFromHour
+import com.sidequests.app.data.offline.OfflinePackEntry
+import com.sidequests.app.data.offline.OfflinePackManager
 import com.sidequests.app.data.QuestCatalogueOrigin
 import com.sidequests.app.data.InMemorySidequestsRepository
 import com.sidequests.app.data.SidequestsRepository
@@ -136,6 +138,7 @@ class AppViewModel(
     private val failureReporter: FailureReporter = FailureReporter.NONE,
     val missionHistorySource: com.sidequests.app.data.history.HistorySource? = null,
     val attemptEvidenceRepository: com.sidequests.app.data.photo.AttemptEvidenceRepository? = null,
+    private val offlinePackManager: OfflinePackManager? = null,
     /** BQ14 (#86): per-account comfort settings in DataStore (null in unit tests). */
     private val socialComfortStore: SocialComfortStore? = null,
     /** BQ14 (#86): durable event queue (Bq1Telemetry.enqueueEvent in the app, no-op in tests). */
@@ -235,6 +238,9 @@ class AppViewModel(
     // Context-aware feature: latest connectivity/battery snapshot from DeviceStatusMonitor.
     private val _deviceStatus = MutableStateFlow(DeviceStatus())
     val deviceStatus: StateFlow<DeviceStatus> = _deviceStatus.asStateFlow()
+    private val emptyOfflinePackEntries = MutableStateFlow<List<OfflinePackEntry>>(emptyList())
+    val offlinePackEntries: StateFlow<List<OfflinePackEntry>> =
+        offlinePackManager?.entries ?: emptyOfflinePackEntries.asStateFlow()
 
     // Smart feature: when the last context was read, used by the battery-aware refresh policy.
     private var lastContextReadAtMillis: Long = 0L
@@ -245,6 +251,7 @@ class AppViewModel(
     init {
         refreshContext()
         refreshQuestCatalog()
+        viewModelScope.launch { offlinePackManager?.restore() }
         restoreAndPersistSettings()
     }
 
@@ -628,6 +635,7 @@ class AppViewModel(
         refreshQuestCatalog()
         refreshRecommendations()
         refreshContext(force = true)
+        viewModelScope.launch { offlinePackManager?.retryPending(isOnline = _deviceStatus.value.isOnline) }
     }
 
     /** Sensor feature: availability of the ambient light sensor on this device. */
@@ -669,6 +677,22 @@ class AppViewModel(
     val categories: List<String> get() = repository.categories()
 
     fun allQuests(): List<Quest> = repository.allQuests()
+
+    fun addQuestToOfflinePack(questId: String) {
+        viewModelScope.launch {
+            offlinePackManager?.addQuest(questId, isOnline = _deviceStatus.value.isOnline)
+        }
+    }
+
+    fun removeQuestFromOfflinePack(questId: String) {
+        viewModelScope.launch { offlinePackManager?.removeQuest(questId) }
+    }
+
+    fun retryOfflinePackDownloads() {
+        viewModelScope.launch {
+            offlinePackManager?.retryPending(isOnline = _deviceStatus.value.isOnline)
+        }
+    }
 
     fun selectedQuest(): Quest = repository.questById(_uiState.value.selectedQuestId)
 
