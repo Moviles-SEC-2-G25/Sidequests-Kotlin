@@ -119,6 +119,14 @@ object Bq1Telemetry : FailureReporter {
         recordResume(tracker.simulateResume(System.currentTimeMillis(), 11 * 60 * 1000L, questId))
     }
 
+    /**
+     * Durable queue for events of other BQs (Sprint 4: BQ14). Same SQLite + WorkManager path as
+     * BQ1, so events recorded offline are uploaded after reconnecting.
+     */
+    fun enqueueEvent(eventType: String, metadata: JsonObject) {
+        enqueue(eventType, metadata, System.currentTimeMillis())
+    }
+
     fun refreshPendingCount() {
         val currentStore = store ?: return
         scope.launch { _pendingCount.value = runCatching { currentStore.count() }.getOrDefault(0L) }
