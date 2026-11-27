@@ -25,6 +25,12 @@ data class PendingTelemetryEvent(
 class TelemetryStore internal constructor(context: Context, databaseName: String = DATABASE_NAME) :
     SQLiteOpenHelper(context, databaseName, null, DATABASE_VERSION) {
 
+    init {
+        // Micro-optimization (Sprint 4): with write-ahead logging a commit only appends to the
+        // WAL file, and the upload worker can read the queue while the app keeps writing.
+        setWriteAheadLoggingEnabled(true)
+    }
+
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
             """
@@ -54,6 +60,11 @@ class TelemetryStore internal constructor(context: Context, databaseName: String
         }
     }
 
+    /**
+     * Micro-optimization (Sprint 4): insert and trim run in ONE transaction, so each event costs
+     * a single journal commit instead of two, and the trim is a primary-key range delete
+     * (see [TelemetryRetention]) instead of sorting the whole table on every insert.
+     */
     private fun insertAndTrim(eventType: String, sessionId: String, metadataJson: String, createdAtMillis: Long): Long {
         val values = ContentValues().apply {
             put("event_type", eventType)
@@ -61,9 +72,18 @@ class TelemetryStore internal constructor(context: Context, databaseName: String
             put("metadata", metadataJson)
             put("created_at", createdAtMillis)
         }
-        val id = writableDatabase.insert(TABLE, null, values)
-        trimTo(MAX_ROWS)
-        return id
+        val db = writableDatabase
+        db.beginTransactionNonExclusive()
+        try {
+            val id = db.insert(TABLE, null, values)
+            TelemetryRetention.deleteUpToId(id, MAX_ROWS)?.let { maxIdToDelete ->
+                db.delete(TABLE, "id <= ?", arrayOf(maxIdToDelete.toString()))
+            }
+            db.setTransactionSuccessful()
+            return id
+        } finally {
+            db.endTransaction()
+        }
     }
 
     fun oldest(limit: Int): List<PendingTelemetryEvent> =
@@ -96,13 +116,6 @@ class TelemetryStore internal constructor(context: Context, databaseName: String
     }
 
     fun count(): Long = DatabaseUtils.queryNumEntries(readableDatabase, TABLE)
-
-    /** Keeps the queue bounded if the device stays offline for a very long time. */
-    private fun trimTo(maxRows: Int) {
-        writableDatabase.execSQL(
-            "DELETE FROM $TABLE WHERE id NOT IN (SELECT id FROM $TABLE ORDER BY id DESC LIMIT $maxRows)"
-        )
-    }
 
     companion object {
         private const val DATABASE_NAME = "sidequests_telemetry.db"
