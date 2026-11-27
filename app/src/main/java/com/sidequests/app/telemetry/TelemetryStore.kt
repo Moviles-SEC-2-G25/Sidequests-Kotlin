@@ -5,6 +5,7 @@ import android.content.Context
 import android.database.DatabaseUtils
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
+import android.os.Trace
 
 data class PendingTelemetryEvent(
     val id: Long,
@@ -21,8 +22,8 @@ data class PendingTelemetryEvent(
  * [TelemetryUploadWorker] uploads and deletes them when there is a connection.
  * One shared instance per process (SQLiteOpenHelper is thread-safe with a single instance).
  */
-class TelemetryStore private constructor(context: Context) :
-    SQLiteOpenHelper(context, DATABASE_NAME, null, DATABASE_VERSION) {
+class TelemetryStore internal constructor(context: Context, databaseName: String = DATABASE_NAME) :
+    SQLiteOpenHelper(context, databaseName, null, DATABASE_VERSION) {
 
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
@@ -44,6 +45,16 @@ class TelemetryStore private constructor(context: Context) :
     }
 
     fun insert(eventType: String, sessionId: String, metadataJson: String, createdAtMillis: Long): Long {
+        // Trace section: every insert shows up in Android Studio Profiler -> System Trace.
+        Trace.beginSection(TRACE_INSERT)
+        try {
+            return insertAndTrim(eventType, sessionId, metadataJson, createdAtMillis)
+        } finally {
+            Trace.endSection()
+        }
+    }
+
+    private fun insertAndTrim(eventType: String, sessionId: String, metadataJson: String, createdAtMillis: Long): Long {
         val values = ContentValues().apply {
             put("event_type", eventType)
             put("session_id", sessionId)
@@ -97,7 +108,8 @@ class TelemetryStore private constructor(context: Context) :
         private const val DATABASE_NAME = "sidequests_telemetry.db"
         private const val DATABASE_VERSION = 1
         private const val TABLE = "pending_events"
-        private const val MAX_ROWS = 500
+        internal const val MAX_ROWS = 500
+        internal const val TRACE_INSERT = "TelemetryStore.insert"
 
         @Volatile private var instance: TelemetryStore? = null
 
