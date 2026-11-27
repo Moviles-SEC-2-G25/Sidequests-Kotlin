@@ -81,14 +81,25 @@ fun normalizeHistorySearch(value: String): String =
     value.lowercase().map { accents[it] ?: it }.joinToString("").trim().replace(whitespace, " ")
 
 fun historyCategoryLabel(category: String): String = when (category.lowercase()) {
+    "outdoors" -> "Outdoors"
+    "food" -> "Food"
+    "art" -> "Art"
+    "learning" -> "Learning"
+    "mindfulness" -> "Mindfulness"
+    "movement" -> "Movement"
+    "social" -> "Social"
+    else -> category
+}
+
+// Preserve the existing search behavior for previously supported category terms.
+private fun legacyHistoryCategorySearchLabel(category: String): String = when (category.lowercase()) {
     "outdoors" -> "Aire libre"
     "food" -> "Gastronomía"
     "art" -> "Arte"
     "learning" -> "Aprendizaje"
     "mindfulness" -> "Bienestar"
     "movement" -> "Movimiento"
-    "social" -> "Social"
-    else -> category
+    else -> ""
 }
 
 fun historyDateOf(attempt: HistoryAttempt, zone: ZoneId): ZonedDateTime {
@@ -120,7 +131,7 @@ fun buildMissionHistory(
         val quest = catalog[attempt.questId]
         if (tokens.isNotEmpty()) {
             val haystack = normalizeHistorySearch(quest?.let {
-                listOf(it.title, it.locationName.orEmpty(), it.category, historyCategoryLabel(it.category)).joinToString(" ")
+                listOf(it.title, it.locationName.orEmpty(), it.category, historyCategoryLabel(it.category), legacyHistoryCategorySearchLabel(it.category)).joinToString(" ")
             } ?: attempt.questId)
             if (!tokens.all { haystack.contains(it) }) return@mapNotNull null
         }
