@@ -3,10 +3,8 @@ package com.sidequests.app.ui
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -36,82 +34,154 @@ fun OfflinePackScreen(
     onRetry: () -> Unit,
     onBack: () -> Unit,
 ) {
-    val selected = entries.associateBy { it.questId }
-    Column(
-        modifier = Modifier.fillMaxSize().padding(horizontal = 18.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+    val selectedIds = entries.mapTo(mutableSetOf()) { it.questId }
+    val availableQuests = quests.filterNot { it.id in selectedIds }
+    val readyCount = entries.count { it.status == OfflinePackStatus.READY }
+    val hasPendingWork = entries.any {
+        it.status == OfflinePackStatus.PENDING_DOWNLOAD ||
+            it.status == OfflinePackStatus.FAILED
+    }
+
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(
+            horizontal = 18.dp,
+            vertical = 12.dp,
+        ),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text("Offline Pack", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+        item {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        "Offline Pack",
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Text(
+                        "$readyCount of ${entries.size} quests ready offline",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                TextButton(onClick = onBack) { Text("Done") }
+            }
+        }
+
+        if (!isOnline && entries.any { it.status != OfflinePackStatus.READY }) {
+            item {
                 Text(
-                    "${entries.count { it.status == OfflinePackStatus.READY }} of ${entries.size} quests ready offline",
+                    "You're offline. Your selections are saved and will be prepared when connectivity returns.",
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        }
+
+        if (hasPendingWork) {
+            item {
+                OutlinedButton(
+                    onClick = onRetry,
+                    enabled = isOnline,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(if (isOnline) "Retry pending downloads" else "Retry when connected")
+                }
+            }
+        }
+
+        item {
+            Text(
+                "YOUR OFFLINE PACK",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
+            )
+        }
+
+        if (entries.isEmpty()) {
+            item {
+                Text(
+                    "No quests selected yet. Add quests below to keep their steps available without internet.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            TextButton(onClick = onBack) { Text("Done") }
-        }
-        if (!isOnline && entries.any { it.status != OfflinePackStatus.READY }) {
-            Text(
-                "You're offline. Selected quests are saved and will be prepared when connectivity returns.",
-                color = MaterialTheme.colorScheme.error,
-                style = MaterialTheme.typography.bodySmall,
-            )
-        }
-        if (entries.any { it.status == OfflinePackStatus.FAILED || it.status == OfflinePackStatus.PENDING_DOWNLOAD }) {
-            OutlinedButton(onClick = onRetry, enabled = isOnline, modifier = Modifier.fillMaxWidth()) {
-                Text("Retry pending downloads")
-            }
-        }
-        Text("YOUR OFFLINE PACK", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
-        if (entries.isEmpty()) {
-            Text("No quests selected yet. Add quests below to keep them available without internet.")
         } else {
-            LazyColumn(
-                modifier = Modifier.weight(1f, fill = true),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                items(entries, key = { it.questId }) { entry ->
-                    val quest = quests.firstOrNull { it.id == entry.questId }
-                    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(12.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(10.dp),
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(quest?.let { "${it.emoji} ${it.title}" } ?: entry.questId, fontWeight = FontWeight.SemiBold)
-                                Text(statusLabel(entry), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                entry.message?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
+            items(entries, key = { "selected-${it.questId}" }) { entry ->
+                val quest = quests.firstOrNull { it.id == entry.questId }
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                    ),
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                quest?.let { "${it.emoji} ${it.title}" } ?: entry.questId,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            Text(
+                                statusLabel(entry),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            entry.message?.let {
+                                Text(
+                                    it,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.error,
+                                )
                             }
-                            TextButton(onClick = { onRemove(entry.questId) }) { Text("Remove") }
+                        }
+                        TextButton(onClick = { onRemove(entry.questId) }) {
+                            Text("Remove")
                         }
                     }
                 }
             }
         }
-        Text("AVAILABLE QUESTS", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
-        LazyColumn(
-            modifier = Modifier.weight(1f, fill = true),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            items(quests.filter { it.id !in selected }, key = { it.id }) { quest ->
+
+        item {
+            Text(
+                "AVAILABLE QUESTS",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
+            )
+        }
+
+        if (availableQuests.isEmpty()) {
+            item {
+                Text(
+                    "All available quests are already in your offline pack.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        } else {
+            items(availableQuests, key = { "available-${it.id}" }) { quest ->
                 Card {
                     Row(
                         modifier = Modifier.fillMaxWidth().padding(12.dp),
                         verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
                             Text("${quest.emoji} ${quest.title}", fontWeight = FontWeight.SemiBold)
-                            Text("${quest.duration} · ${quest.category}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(
+                                "${quest.duration} · ${quest.category}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
                         }
                         Button(onClick = { onAdd(quest.id) }) { Text("Add") }
                     }
                 }
             }
         }
-        Spacer(Modifier.height(2.dp))
     }
 }
 
