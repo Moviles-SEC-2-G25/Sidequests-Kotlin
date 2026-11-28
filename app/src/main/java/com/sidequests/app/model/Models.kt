@@ -9,6 +9,7 @@ data class QuestStep(
     val description: String,
     val requiresPhoto: Boolean = false,
     val requiresLocation: Boolean = false,
+    val remoteStepOrder: Int? = null,
 )
 
 data class GroupMember(
@@ -102,6 +103,9 @@ data class SidequestsUiState(
     val pendingPhotoUploads: Int = 0,
     /** Quest lifecycle changes saved on the device and not yet confirmed by Supabase. */
     val pendingProgressSync: Int = 0,
+    val historyRevision: Long = 0,
+    val ratingSaving: Boolean = false,
+    val abandonedAttemptIds: Set<String> = emptySet(),
     val screen: AppScreen = AppScreen.Onboarding,
     val onboardingStep: Int = 0,
     val darkMode: Boolean = false,

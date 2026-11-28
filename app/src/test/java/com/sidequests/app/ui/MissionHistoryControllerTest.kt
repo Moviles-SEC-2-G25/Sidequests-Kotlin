@@ -4,6 +4,7 @@ import com.sidequests.app.data.history.HistoryLoad
 import com.sidequests.app.data.history.HistorySource
 import com.sidequests.app.domain.*
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
@@ -18,6 +19,28 @@ class MissionHistoryControllerTest {
         HistoryAttempt("1","alice","cafe","completed","2026-11-01T12:00:00Z"),
         HistoryAttempt("2","alice","yoga","abandoned","2026-11-02T12:00:00Z")
     ), listOf(HistoryQuest("cafe","Café","food",45), HistoryQuest("yoga","Yoga","mindfulness",20)))
+
+    @Test fun confirmationDuringInitialLoadRefreshesStatisticsAfterThatLoad() = runTest {
+        val firstLoad = CompletableDeferred<Unit>()
+        var calls = 0
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val c = MissionHistoryController("alice", HistorySource { _, _ ->
+            if (++calls == 1) {
+                firstLoad.await()
+                HistoryLoad(data.copy(attempts = emptyList()), true)
+            } else HistoryLoad(data, true)
+        }, backgroundScope, dispatcher)
+        c.connectivityChanged(true)
+        runCurrent()
+        backgroundScope.launch { c.refreshAfterPendingLoad() }
+        runCurrent()
+        assertEquals(1, calls)
+        firstLoad.complete(Unit)
+        runCurrent()
+        assertEquals(2, calls)
+        assertEquals(1, c.state.value.statistics?.completed)
+        c.close()
+    }
 
     @Test fun typingDebouncesAndFilterUsesLatestQueryImmediately() = runTest {
         var builds = 0

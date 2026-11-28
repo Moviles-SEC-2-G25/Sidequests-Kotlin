@@ -67,6 +67,7 @@ fun QuestDto.toDomain(
                 description = step.description,
                 requiresPhoto = step.verificationType in setOf("photo", "photo_and_location"),
                 requiresLocation = step.verificationType in setOf("location", "photo_and_location"),
+                remoteStepOrder = step.stepOrder,
             )
         }
         .ifEmpty { fallback?.steps.orEmpty() }

@@ -230,9 +230,17 @@ private fun AuthenticatedSidequestsContent(
     LaunchedEffect(historyController, deviceStatus.isOnline) {
         historyController.connectivityChanged(deviceStatus.isOnline)
     }
-    LaunchedEffect(historyController, state.screen, state.pendingProgressSync) {
+    LaunchedEffect(historyController, state.screen) {
         if (state.screen == AppScreen.Statistics || state.screen == AppScreen.MissionHistory) {
             historyController.refresh()
+        }
+    }
+    var lastHistoryRevision by remember(historyController) { mutableStateOf(state.historyRevision) }
+    LaunchedEffect(historyController, state.historyRevision) {
+        if (lastHistoryRevision != state.historyRevision) {
+            delay(250)
+            historyController.refreshAfterPendingLoad()
+            lastHistoryRevision = state.historyRevision
         }
     }
 
@@ -321,6 +329,7 @@ private fun AuthenticatedSidequestsContent(
                         quest = viewModel.activeQuest(),
                         progress = viewModel.activeProgress(),
                         viewModel = viewModel,
+                        attemptId = attemptId,
                     )
 
                     AppScreen.QuestAlternatives -> QuestAlternativesScreen(
@@ -335,7 +344,7 @@ private fun AuthenticatedSidequestsContent(
                             viewModel.activeQuest(),
                             viewModel,
                             state = state,
-                            historicalUnavailableIds = historyState.statistics?.unavailableQuestIds.orEmpty(),
+                            history = historyState.statistics,
                         )
                     }
 

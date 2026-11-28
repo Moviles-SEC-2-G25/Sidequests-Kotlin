@@ -9,9 +9,15 @@ import com.sidequests.app.data.analytics.AnalyticsRepository
 import com.sidequests.app.data.local.LexLocalStore
 import com.sidequests.app.data.local.PendingProgressOp
 import com.sidequests.app.data.progress.QuestProgressRepository
+import com.sidequests.app.data.progress.QuestProgressSyncEngine
+import com.sidequests.app.domain.HistoryAttempt
+import com.sidequests.app.domain.HistorySnapshot
+import com.sidequests.app.domain.completionSuggestions
+import com.sidequests.app.domain.summarizeQuestStatistics
 import com.sidequests.app.data.recommendation.RecommendationRepository
 import com.sidequests.app.data.recommendation.RecommendationResult
 import com.sidequests.app.model.AppScreen
+import com.sidequests.app.model.AbandonmentReason
 import com.sidequests.app.model.Quest
 import com.sidequests.app.model.SocialLevel
 import com.sidequests.app.model.UserPreferences
@@ -118,6 +124,100 @@ class OfflineQuestQueueFlowTest {
         assertEquals(1, changes.size)
         assertTrue(changes.single().completed)
         assertEquals(attempt, changes.single().attemptId)
+    }
+
+    @Test fun `GPS completion during Exit keeps the attempt closed despite a stale save`() = runTest(dispatcher) {
+        val repository = InMemorySidequestsRepository()
+        val source = repository.questById("library-deep-dive")
+        val quest = source.copy(latitude = 4.60, longitude = -74.0,
+            steps = listOf(source.steps.first().copy(requiresPhoto = false, requiresLocation = true)))
+        val catalogue = object : SidequestsRepository by repository {
+            override fun questById(id: String) = if (id == quest.id) quest else repository.questById(id)
+        }
+        val vm = signedInOffline(catalogue = catalogue)
+        vm.acceptQuest(quest.id)
+        val attempt = vm.uiState.value.attemptIdByQuest.getValue(quest.id)
+        vm.navigate(AppScreen.ExitFlow)
+        vm.checkInAtLocation("alice", attempt, 0, LocationData(4.60, -74.0), 20f)
+        vm.saveAndExit(attempt)
+        vm.jumpToStep(0)
+        advanceUntilIdle()
+
+        assertEquals(AppScreen.Rating, vm.uiState.value.screen)
+        assertTrue(store().read().photoQuests.getValue(attempt).closed)
+        val operations = store().read().progressOps
+        assertEquals(listOf(PendingProgressOp.ACCEPT, PendingProgressOp.PROGRESS), operations.map { it.type })
+        assertTrue(operations.last().completed)
+    }
+
+    @Test fun `offline completion ranks eligible quests and preserves the rated attempt through detail and sync`() = runTest(dispatcher) {
+        val repository = InMemorySidequestsRepository()
+        val seed = repository.questById("library-deep-dive")
+        val source = seed.copy(steps = listOf(seed.steps.first().copy(requiresPhoto = false)), durationMinutes = 20)
+        val same = source.copy(id = "same")
+        val other = source.copy(id = "other", category = "Outdoor")
+        val extra = source.copy(id = "extra", category = "Food", tags = emptyList())
+        val fourth = source.copy(id = "fourth", category = "Food", tags = emptyList())
+        val long = source.copy(id = "long", durationMinutes = 45)
+        val active = source.copy(id = "active")
+        val completed = source.copy(id = "completed")
+        val catalog = listOf(source, same, other, extra, fourth, long, active, completed)
+        val catalogue = object : SidequestsRepository by repository {
+            override fun allQuests() = catalog
+            override fun questById(id: String) = catalog.firstOrNull { it.id == id } ?: repository.questById(id)
+        }
+        val vm = signedInOffline(catalogue = catalogue)
+        vm.setAvailableTime(30)
+        vm.acceptQuest(same.id)
+        val abandoned = vm.uiState.value.attemptIdByQuest.getValue(same.id)
+        vm.startAnotherQuest(AbandonmentReason.entries.first())
+        vm.saveAndExit(abandoned)
+        vm.acceptQuest(active.id)
+        vm.acceptQuest(source.id)
+        val attempt = vm.uiState.value.attemptIdByQuest.getValue(source.id)
+        vm.completeCurrentStep(attempt, 0)
+        assertEquals(AppScreen.Rating, vm.uiState.value.screen)
+
+        val acceptedAt = "2026-11-01T12:00:00Z"
+        val staleHistory = summarizeQuestStatistics(HistorySnapshot("alice", listOf(
+            HistoryAttempt(abandoned, "alice", same.id, "in_progress", acceptedAt),
+            HistoryAttempt("done", "alice", completed.id, "completed", acceptedAt),
+        ), emptyList()))
+        fun suggestions(stars: Int) = completionSuggestions(
+            source, vm.allQuests(), vm.uiState.value, staleHistory, stars,
+        ).map { it.id }
+        assertEquals(listOf("same", "other", "extra"), suggestions(5))
+        assertEquals("other", suggestions(1).first())
+        assertEquals(listOf("same", "other", "extra"), suggestions(5))
+        vm.openSimilarQuest(same.id, 1)
+        assertEquals(same.id, vm.selectedQuest().id)
+        vm.closeQuestDetail()
+        assertEquals(AppScreen.Rating, vm.uiState.value.screen)
+        assertEquals(source.id, vm.activeQuest().id)
+        vm.submitRating(5, setOf("Worth it"))
+        assertEquals(AppScreen.Rating, vm.uiState.value.screen)
+        vm.submitRating(1, emptySet())
+        advanceUntilIdle()
+        assertEquals(AppScreen.Explorer, vm.uiState.value.screen)
+
+        val saved = store().read()
+        assertTrue(saved.photoQuests.getValue(attempt).closed)
+        assertTrue(saved.photoQuests.getValue(abandoned).closed)
+        assertTrue(saved.progressOps.none { it.type == PendingProgressOp.SAVE })
+        val lifecycle = saved.progressOps.filter { it.attemptId == attempt }
+        assertEquals(listOf(PendingProgressOp.ACCEPT, PendingProgressOp.PROGRESS, PendingProgressOp.RATE), lifecycle.map { it.type })
+        assertTrue(lifecycle[1].completed)
+        assertEquals(5, lifecycle.last().stars)
+        assertEquals(setOf("Worth it"), lifecycle.last().tags)
+        val opened = saved.events.single { it.eventType == "similar_quest_opened" }
+        assertEquals(same.id, opened.questId)
+        assertEquals(source.id, opened.metadata.getValue("source_quest_id").jsonPrimitive.content)
+        assertEquals("1", opened.metadata.getValue("rank").jsonPrimitive.content)
+        assertEquals(0L, vm.uiState.value.historyRevision)
+        QuestProgressSyncEngine(store(), { "alice" }) { Result.success(Unit) }.drain("alice")
+        advanceUntilIdle()
+        assertEquals(saved.progressOps.count { it.type != PendingProgressOp.RATE }.toLong(), vm.uiState.value.historyRevision)
+        assertTrue(store().read().progressOps.isEmpty())
     }
 
     @Test fun `late taps cannot advance a different step or complete an attempt twice`() = runTest(dispatcher) {

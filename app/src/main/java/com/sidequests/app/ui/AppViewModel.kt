@@ -391,6 +391,7 @@ class AppViewModel(
                 if (attachedUserId != userId) return@launch
                 _uiState.update { it.copy(
                     accountUserId = userId,
+                    historyRevision = saved.historyRevisions[userId] ?: 0L,
                     preferences = journey.preferences,
                     availableTime = journey.preferences.typicalTime,
                     onboardingStep = journey.step,
@@ -448,6 +449,10 @@ class AppViewModel(
                 progressByQuest = progress,
                 pendingPhotoUploads = photos.count { it.status in setOf("pending", "uploading") },
                 pendingProgressSync = saved.progressOps.count { it.userId == userId },
+                historyRevision = saved.historyRevisions[userId] ?: 0L,
+                abandonedAttemptIds = state.abandonedAttemptIds + saved.progressOps.asSequence()
+                    .filter { it.userId == userId && it.type == PendingProgressOp.ABANDON }
+                    .map { it.attemptId }.toSet(),
             )
         }
     }
@@ -495,6 +500,8 @@ class AppViewModel(
         progress: QuestProgress,
         closed: Boolean = false,
         op: PendingProgressOp? = null,
+        onStored: (() -> Unit)? = null,
+        onStorageFailure: (() -> Unit)? = null,
     ) {
         val store = localStore ?: return
         val userId = attachedUserId ?: return
@@ -513,9 +520,21 @@ class AppViewModel(
                         }
                     }
                 }
-                if (op != null) scheduleLocalSync(userId)
             } catch (cancelled: CancellationException) { throw cancelled }
-              catch (_: Exception) { _uiState.update { it.copy(localStateError = "Quest progress could not be saved on this device. Please try again.") } }
+              catch (_: Exception) {
+                if (onStorageFailure != null) onStorageFailure()
+                else if (attachedUserId == userId) {
+                    _uiState.update { it.copy(localStateError = "Quest progress could not be saved on this device. Please try again.") }
+                }
+                return@launch
+              }
+            onStored?.invoke()
+            // Once committed, a scheduler failure leaves the operation in the outbox for a later retry.
+            if (op != null) {
+                try { scheduleLocalSync(userId) }
+                catch (cancelled: CancellationException) { throw cancelled }
+                catch (_: Exception) { /* The durable operation remains available for retry. */ }
+            }
         }
     }
 
@@ -1113,7 +1132,7 @@ class AppViewModel(
 
     fun openSimilarQuest(questId: String, rank: Int) {
         val state = _uiState.value
-        if (state.screen != AppScreen.Rating) return
+        if (state.screen != AppScreen.Rating || state.ratingSaving) return
         val quest = repository.allQuests().firstOrNull { it.id == questId } ?: return
         trackEvent("similar_quest_opened", quest, buildJsonObject {
             put("source_quest_id", state.activeQuestId)
@@ -1605,6 +1624,8 @@ class AppViewModel(
                         completedSteps = nextCompleted,
                     )
                 ),
+                screen = if (completed && it.screen in setOf(AppScreen.ActiveQuest, AppScreen.ExitFlow)) AppScreen.Rating
+                    else it.screen,
                 progressSyncError = null,
             )
         }
@@ -1664,7 +1685,7 @@ class AppViewModel(
     fun jumpToStep(step: Int) {
         val state = _uiState.value
         val questId = state.activeQuestId
-        val current = state.progressByQuest[questId] ?: QuestProgress()
+        val current = openAttemptProgress(questId) ?: return
         val updated = current.copy(currentStep = step.coerceIn(0, 3))
         _uiState.update {
             it.copy(progressByQuest = it.progressByQuest + (questId to updated))
@@ -1690,7 +1711,9 @@ class AppViewModel(
                     val saved = photoMutex.withLock { withContext(localIoDispatcher) {
                         val file = File(localPath)
                         check(file.isFile && file.length() > 0)
-                        val entry = StoredPhotoProof(UUID.randomUUID().toString(), userId, attemptId, questId, stepIndex, localPath, java.time.Instant.now().toString(), category = quest.category)
+                        val entry = StoredPhotoProof(UUID.randomUUID().toString(), userId, attemptId, questId,
+                            stepIndex, localPath, java.time.Instant.now().toString(), category = quest.category,
+                            remoteStepOrder = quest.steps[stepIndex].remoteStepOrder)
                         localStore.update { old -> old.copy(
                             photos = old.photos + entry,
                             events = old.events + photoEvent(entry, "photo_proof_captured"),
@@ -1785,6 +1808,7 @@ class AppViewModel(
         remote: PhotoProofRepository,
     ) {
         val questId = quest.id
+        val photoOwner = attachedUserId
         _uiState.update { state ->
             val current = state.progressByQuest[questId] ?: QuestProgress()
             state.copy(
@@ -1803,6 +1827,8 @@ class AppViewModel(
                 questId = questId,
                 stepIndex = stepIndex,
                 photoFile = photoFile,
+                expectedUserId = photoOwner,
+                remoteStepOrder = quest.steps.getOrNull(stepIndex)?.remoteStepOrder,
             )
                 .onSuccess { upload ->
                     _uiState.update { state ->
@@ -1858,10 +1884,13 @@ class AppViewModel(
         }
     }
 
-    fun saveAndExit() {
+    fun saveAndExit(expectedAttemptId: String? = _uiState.value.attemptIdByQuest[_uiState.value.activeQuestId]) {
         val state = _uiState.value
         val questId = state.activeQuestId
-        val current = (state.progressByQuest[questId] ?: QuestProgress()).copy(paused = true, abandonReason = null)
+        val attemptId = state.attemptIdByQuest[questId] ?: return
+        if (attemptId != expectedAttemptId) return
+        val current = openAttemptProgress(questId)?.takeUnless { it.paused }
+            ?.copy(paused = true, abandonReason = null) ?: return
 
         _uiState.update {
             it.copy(
@@ -1883,7 +1912,6 @@ class AppViewModel(
             },
         )
 
-        val attemptId = state.attemptIdByQuest[questId] ?: return
         val op = progressOp(PendingProgressOp.SAVE, questId, attemptId, current.currentStep, current.completedSteps)
         persistActiveQuestProgress(questId, attemptId, current, op = op)
         if (op != null) {
@@ -1925,6 +1953,7 @@ class AppViewModel(
                 ),
                 skippedQuestIds = it.skippedQuestIds + questId,
                 attemptIdByQuest = it.attemptIdByQuest - questId,
+                abandonedAttemptIds = it.abandonedAttemptIds + attemptId,
                 screen = AppScreen.QuestAlternatives,
                 questAlternatives = QuestAlternativesState(
                     sourceQuestId = questId,
@@ -2046,31 +2075,46 @@ class AppViewModel(
     fun submitRating(stars: Int, tags: Set<String>) {
         val state = _uiState.value
         val questId = state.activeQuestId
+        if (state.screen != AppScreen.Rating || state.ratingSaving || stars !in 1..5) return
+        val attemptId = state.attemptIdByQuest[questId] ?: return
+        val quest = repository.questById(questId)
+        val progress = state.progressByQuest[questId] ?: return
+        if (quest.steps.isEmpty() || progress.abandoned || progress.completedSteps.size < quest.steps.size) return
+        val generation = accountGeneration
 
-        _uiState.update {
-            it.copy(
-                ratingsByQuest = it.ratingsByQuest + (
-                    questId to QuestRating(stars, tags)
-                ),
-                attemptIdByQuest = it.attemptIdByQuest - questId,
-                screen = AppScreen.Explorer,
-                progressSyncError = null,
-            )
+        fun finishRating() {
+            if (generation != accountGeneration) return
+            _uiState.update {
+                it.copy(
+                    ratingsByQuest = it.ratingsByQuest + (questId to QuestRating(stars, tags)),
+                    attemptIdByQuest = it.attemptIdByQuest - questId,
+                    screen = AppScreen.Explorer,
+                    ratingSaving = false,
+                    progressSyncError = null,
+                )
+            }
         }
 
-        val attemptId = state.attemptIdByQuest[questId] ?: return
         val op = progressOp(PendingProgressOp.RATE, questId, attemptId, stars = stars, tags = tags)
-        persistActiveQuestProgress(
-            questId = questId,
-            attemptId = attemptId,
-            progress = state.progressByQuest[questId] ?: QuestProgress(),
-            closed = true,
-            op = op,
-        )
         if (op != null) {
-            showQueuedProgress("Saving rating…")
+            _uiState.update { it.copy(ratingSaving = true, progressSyncError = null) }
+            persistActiveQuestProgress(
+                questId, attemptId, progress, closed = true, op = op,
+                onStored = {
+                    if (generation == accountGeneration) {
+                        finishRating()
+                        showQueuedProgress("Saving rating…")
+                    }
+                },
+                onStorageFailure = {
+                    if (generation == accountGeneration) {
+                        _uiState.update { it.copy(ratingSaving = false, progressSyncError = "Could not save your rating. Please try again.") }
+                    }
+                },
+            )
             return
         }
+        finishRating()
         syncProgress("Saving rating…") {
             progressRepository?.rateQuest(
                 attemptId = attemptId,
@@ -2082,7 +2126,9 @@ class AppViewModel(
 
     fun skipRating() {
         _uiState.update {
-            it.copy(screen = AppScreen.Explorer, attemptIdByQuest = it.attemptIdByQuest - it.activeQuestId)
+            if (it.screen == AppScreen.Rating && !it.ratingSaving) {
+                it.copy(screen = AppScreen.Explorer, attemptIdByQuest = it.attemptIdByQuest - it.activeQuestId)
+            } else it
         }
     }
 

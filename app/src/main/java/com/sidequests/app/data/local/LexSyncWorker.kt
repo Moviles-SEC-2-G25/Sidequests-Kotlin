@@ -46,7 +46,8 @@ class LexSyncWorker(context: Context, parameters: WorkerParameters) : CoroutineW
             }.drain(userId)
             val remote = SupabasePhotoProofRepository(client, BuildConfig.SUPABASE_QUEST_PROOFS_BUCKET)
             val retryPhoto = PhotoProofSyncEngine(store, { client.auth.currentUserOrNull()?.id }) { entry ->
-                remote.upload(entry.attemptId, entry.questId, entry.stepIndex, File(entry.localPath), entry.id, entry.userId)
+                remote.upload(entry.attemptId, entry.questId, entry.stepIndex, File(entry.localPath),
+                    entry.id, entry.userId, entry.remoteStepOrder)
             }.drain(userId)
             for (event in store.read().events.filter { it.userId == userId }) {
                 if (client.auth.currentUserOrNull()?.id != userId) return@withContext Result.success()

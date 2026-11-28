@@ -1,5 +1,6 @@
 package com.sidequests.app.ui
 
+import android.content.ActivityNotFoundException
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -72,7 +73,7 @@ import com.sidequests.app.ui.theme.ExplorerIndigo
 import com.sidequests.app.ui.theme.QuestAmber
 import com.sidequests.app.domain.SmartDifficultyAdvisor
 import com.sidequests.app.domain.QuestStatistics
-import com.sidequests.app.domain.similarQuests
+import com.sidequests.app.domain.completionSuggestions
 import com.sidequests.app.domain.hasDestination
 import com.sidequests.app.BuildConfig
 import com.sidequests.app.telemetry.AppModule
@@ -259,15 +260,18 @@ fun ActiveQuestScreen(
     var pendingPhotoStep by rememberSaveable { mutableIntStateOf(-1) }
     var pendingAttemptId by rememberSaveable { mutableStateOf<String?>(null) }
     var pendingOwnerId by rememberSaveable { mutableStateOf<String?>(null) }
+    fun clearPendingCapture() {
+        pendingPhotoPath = null
+        pendingPhotoStep = -1
+        pendingAttemptId = null
+        pendingOwnerId = null
+    }
     val photoLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { captured ->
         val file = pendingPhotoPath?.let(::File)
         val stepIndex = pendingPhotoStep
         val attemptId = pendingAttemptId
         val ownerId = pendingOwnerId
-        pendingPhotoPath = null
-        pendingPhotoStep = -1
-        pendingAttemptId = null
-        pendingOwnerId = null
+        clearPendingCapture()
 
         if (captured && file != null && file.length() > 0 && stepIndex >= 0) {
             if (attemptId != null && ownerId != null) {
@@ -406,7 +410,13 @@ fun ActiveQuestScreen(
                                         pendingPhotoStep = capture.stepIndex
                                         pendingAttemptId = viewModel.uiState.value.attemptIdByQuest[quest.id]
                                         pendingOwnerId = viewModel.uiState.value.accountUserId
-                                        photoLauncher.launch(capture.uri)
+                                        try {
+                                            photoLauncher.launch(capture.uri)
+                                        } catch (_: ActivityNotFoundException) {
+                                            clearPendingCapture()
+                                            cameraService.discardCapture(capture.file)
+                                            viewModel.reportPhotoProofError(index, "No camera app is available to capture photo proof.")
+                                        }
                                     }
                                     .onFailure {
                                         viewModel.reportPhotoProofError(
@@ -510,6 +520,7 @@ fun ExitFlowScreen(
     quest: Quest,
     progress: QuestProgress,
     viewModel: AppViewModel,
+    attemptId: String?,
     modifier: Modifier = Modifier,
 ) {
     var selectedReason by remember { mutableStateOf<AbandonmentReason?>(null) }
@@ -550,7 +561,7 @@ fun ExitFlowScreen(
             }
         }
         Spacer(Modifier.height(24.dp))
-        PrimaryButton("Save progress & exit", viewModel::saveAndExit)
+        PrimaryButton("Save progress & exit", { viewModel.saveAndExit(attemptId) })
         Spacer(Modifier.height(8.dp))
         PrimaryButton("Keep going", { viewModel.navigate(AppScreen.ActiveQuest) }, containerColor = DiscoveryTeal)
         Spacer(Modifier.height(8.dp))
@@ -580,7 +591,7 @@ fun RatingScreen(
     quest: Quest,
     viewModel: AppViewModel,
     state: SidequestsUiState,
-    historicalUnavailableIds: Set<String>,
+    history: QuestStatistics?,
     modifier: Modifier = Modifier,
 ) {
     var stars by rememberSaveable { mutableIntStateOf(0) }
@@ -589,16 +600,10 @@ fun RatingScreen(
     ) { mutableStateOf(emptySet()) }
     val tags = listOf("Worth it", "Would do again", "Felt proud", "Relaxing", "Surprising", "A bit tough")
     val catalog = viewModel.allQuests()
-    val unavailable = remember(catalog, historicalUnavailableIds, state.progressByQuest, state.attemptIdByQuest) {
-        historicalUnavailableIds + catalog.filter { candidate ->
-            val progress = state.progressByQuest[candidate.id]
-            progress?.abandoned != true && (candidate.id in state.attemptIdByQuest ||
-                (candidate.steps.isNotEmpty() && (progress?.completedSteps?.size ?: 0) >= candidate.steps.size))
-        }.map { it.id }
-    }
-    val suggestions by produceState(emptyList<Quest>(), quest, catalog, unavailable, stars, state.availableTime) {
+    val suggestions by produceState(emptyList<Quest>(), quest, catalog, history, stars, state.availableTime,
+        state.attemptIdByQuest, state.progressByQuest, state.abandonedAttemptIds) {
         value = withContext(Dispatchers.Default) {
-            similarQuests(quest, catalog, unavailable, stars, state.availableTime)
+            completionSuggestions(quest, catalog, state, history, stars)
         }
     }
 
@@ -662,8 +667,10 @@ fun RatingScreen(
             }
         }
         Spacer(Modifier.height(24.dp))
-        PrimaryButton("Save rating", { viewModel.submitRating(stars, selectedTags) }, enabled = stars > 0)
-        TextButton(onClick = viewModel::skipRating) { Text("Skip") }
+        state.progressSyncError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+        PrimaryButton(if (state.ratingSaving) "Saving rating…" else "Save rating",
+            { viewModel.submitRating(stars, selectedTags) }, enabled = stars > 0 && !state.ratingSaving)
+        TextButton(onClick = viewModel::skipRating, enabled = !state.ratingSaving) { Text("Skip") }
     }
 }
 

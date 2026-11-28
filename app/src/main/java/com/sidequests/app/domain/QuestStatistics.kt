@@ -24,6 +24,7 @@ data class QuestStatistics(
     val categories: Map<String, CategoryStatistics>,
     val unavailableQuestIds: Set<String>,
     val completedQuestIds: Set<String>,
+    val activeQuestIdsByAttempt: Map<String, String>,
 )
 
 fun summarizeQuestStatistics(snapshot: HistorySnapshot): QuestStatistics {
@@ -44,5 +45,7 @@ fun summarizeQuestStatistics(snapshot: HistorySnapshot): QuestStatistics {
         unavailableQuestIds = attempts.filter { it.status in setOf("accepted", "in_progress", "completed") }
             .mapTo(mutableSetOf()) { it.questId },
         completedQuestIds = attempts.filter { it.status == "completed" }.mapTo(mutableSetOf()) { it.questId },
+        activeQuestIdsByAttempt = attempts.filter { it.status in setOf("accepted", "in_progress") }
+            .associate { it.id to it.questId },
     )
 }

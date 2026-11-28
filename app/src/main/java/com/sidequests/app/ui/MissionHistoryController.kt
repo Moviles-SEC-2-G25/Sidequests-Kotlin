@@ -112,6 +112,11 @@ class MissionHistoryController(
         }
     }
 
+    suspend fun refreshAfterPendingLoad() {
+        loadJob?.join()
+        refresh()
+    }
+
     fun setQuery(value: String) {
         if (_state.value.query == value) return
         _state.update { it.copy(query = value) }

@@ -22,6 +22,7 @@ internal object Bq9RecommendationOutbox {
         "recommendation_shown",
         "recommendation_accepted",
         "recommendation_skipped",
+        "similar_quest_opened",
         "group_challenge_client_unconfirmed",
     )
 

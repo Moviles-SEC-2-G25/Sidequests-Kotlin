@@ -59,6 +59,7 @@ data class StoredPhotoProof(
     val attempts: Int = 0,
     val error: String? = null,
     val category: String? = null,
+    val remoteStepOrder: Int? = null,
 )
 
 @Serializable
@@ -113,6 +114,7 @@ data class LexLocalState(
     // Optional so outbox files written before this queue existed stay readable.
     val progressOps: List<PendingProgressOp> = emptyList(),
     val evidenceIndexes: Map<String, SavedEvidenceIndex> = emptyMap(),
+    val historyRevisions: Map<String, Long> = emptyMap(),
 )
 
 /** Small private outbox. All callers use Dispatchers.IO. State and events commit together. */

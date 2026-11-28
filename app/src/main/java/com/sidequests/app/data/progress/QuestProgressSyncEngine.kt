@@ -40,6 +40,8 @@ class QuestProgressSyncEngine(
                     state.copy(
                         progressOps = state.progressOps.filterNot { it.id == op.id },
                         events = state.events + op.confirmedEvents,
+                        historyRevisions = if (op.type == PendingProgressOp.RATE) state.historyRevisions
+                            else state.historyRevisions + (userId to ((state.historyRevisions[userId] ?: 0L) + 1L)),
                     )
                 }
             } else {

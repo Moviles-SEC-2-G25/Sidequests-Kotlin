@@ -38,9 +38,12 @@ class PhotoProofSyncEngine(
                 } catch (error: Exception) { Result.failure(error) }
             result.fold(
                 onSuccess = { uploaded ->
+                    val confirmed = entry.copy(storagePath = uploaded.storagePath,
+                        remoteStepOrder = uploaded.remoteStepOrder ?: entry.remoteStepOrder)
                     store.update { state -> state.copy(
-                        photos = state.photos.map { if (it.id == entry.id) it.copy(status = "uploaded", storagePath = uploaded.storagePath, error = null) else it },
-                        events = state.events + photoEvent(entry.copy(storagePath = uploaded.storagePath), "photo_proof_uploaded", uploaded.byteCount),
+                        photos = state.photos.map { if (it.id == entry.id) it.copy(status = "uploaded",
+                            storagePath = confirmed.storagePath, remoteStepOrder = confirmed.remoteStepOrder, error = null) else it },
+                        events = state.events + photoEvent(confirmed, "photo_proof_uploaded", uploaded.byteCount),
                     ) }
                 },
                 onFailure = { error ->
@@ -75,7 +78,7 @@ fun photoEvent(entry: StoredPhotoProof, type: String, bytes: Long = File(entry.l
         put("attempt_id", entry.attemptId)
         put("proof_id", entry.id)
         put("step_index", entry.stepIndex)
-        put("step_order", entry.stepIndex)
+        put("step_order", entry.remoteStepOrder ?: entry.stepIndex)
         put("byte_count", bytes)
         put("size_bytes", bytes)
         put("was_retry", entry.attempts > 0)
