@@ -68,6 +68,7 @@ class Bq8ViewportExposureFlowTest {
         val store = LexLocalStore(File(folder.root, "bq8-outbox.json"))
         val analytics = object : AnalyticsRepository {
             override suspend fun track(
+                expectedUserId: String?,
                 sessionId: String,
                 eventType: String,
                 availableMinutes: Int,

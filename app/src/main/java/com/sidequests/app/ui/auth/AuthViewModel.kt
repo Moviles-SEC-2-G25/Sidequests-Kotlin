@@ -3,6 +3,7 @@ package com.sidequests.app.ui.auth
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.sidequests.app.data.auth.AuthRepository
+import com.sidequests.app.data.auth.BiometricLockStore
 import com.sidequests.app.data.auth.SupabaseAuthRepository
 import com.sidequests.app.data.remote.OFFLINE_ACTION_MESSAGE
 import com.sidequests.app.data.remote.SupabaseProvider
@@ -11,15 +12,19 @@ import io.github.jan.supabase.auth.exception.AuthErrorCode
 import io.github.jan.supabase.auth.exception.AuthRestException
 import io.github.jan.supabase.auth.exception.AuthWeakPasswordException
 import io.github.jan.supabase.auth.status.SessionStatus
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 
 enum class AuthStage {
     Initializing,
     SignedOut,
+    BiometricLocked,
     SignedIn,
     ConfigurationMissing,
 }
@@ -29,6 +34,11 @@ data class AuthUiState(
     val stage: AuthStage = AuthStage.Initializing,
     val isBusy: Boolean = false,
     val userEmail: String? = null,
+    val userDisplayName: String? = null,
+    val biometricEnabled: Boolean = false,
+    val emailCodeMode: Boolean = false,
+    val emailCodeAddress: String? = null,
+    val resendAfterMillis: Long = 0L,
     val message: String? = null,
     val error: String? = null,
     /** Short headline shown above [error] in the sign-in error card. */
@@ -49,7 +59,12 @@ class AuthViewModel(
         } else {
             null
         },
+    private val biometricStore: BiometricLockStore? = null,
+    private val elapsedMillis: () -> Long = ::authElapsedMillis,
 ) : ViewModel() {
+
+    private var unlockedUser: String? = null
+    private val resendDeadlines = mutableMapOf<String, Long>()
 
     private val _uiState = MutableStateFlow(
         if (repository == null) {
@@ -78,12 +93,23 @@ class AuthViewModel(
                         }
 
                         is SessionStatus.Authenticated -> {
+                            val userId = status.session.user?.id
+                            if (status.isNew) unlockedUser = userId
+                            resendDeadlines.clear()
+                            val biometricEnabled = userId != null && biometricStore?.enabled(userId) == true
+                            val requireUnlock = biometricEnabled && unlockedUser != userId
                             _uiState.update {
                                 it.copy(
-                                    stage = AuthStage.SignedIn,
-                                    userId = status.session.user?.id,
+                                    stage = if (requireUnlock) AuthStage.BiometricLocked else AuthStage.SignedIn,
+                                    userId = userId,
                                     isBusy = false,
                                     userEmail = status.session.user?.email,
+                                    userDisplayName = (status.session.user?.userMetadata?.get("display_name") as? JsonPrimitive)
+                                        ?.contentOrNull?.trim()?.takeIf { it.isNotEmpty() },
+                                    biometricEnabled = biometricEnabled,
+                                    emailCodeMode = false,
+                                    emailCodeAddress = null,
+                                    resendAfterMillis = 0L,
                                     message = null,
                                     error = null,
                                     errorTitle = null,
@@ -92,22 +118,29 @@ class AuthViewModel(
                         }
 
                         is SessionStatus.NotAuthenticated -> {
+                            unlockedUser = null
                             _uiState.update {
                                 it.copy(
                                     stage = AuthStage.SignedOut,
                                     userId = null,
                                     isBusy = false,
                                     userEmail = null,
+                                    userDisplayName = null,
+                                    biometricEnabled = false,
                                 )
                             }
                         }
 
                         is SessionStatus.RefreshFailure -> {
+                            unlockedUser = null
                             _uiState.update {
                                 it.copy(
                                     stage = AuthStage.SignedOut,
                                     isBusy = false,
                                     userEmail = null,
+                                    userDisplayName = null,
+                                    userId = null,
+                                    biometricEnabled = false,
                                     errorTitle = "Session expired",
                                     error = "Your session could not be refreshed. Please sign in again.",
                                 )
@@ -138,6 +171,83 @@ class AuthViewModel(
             }.onFailure { throwable ->
                 val (title, body) = describeAuthFailure(throwable, signUp = false)
                 _uiState.update { it.copy(isBusy = false, errorTitle = title, error = body) }
+            }
+        }
+    }
+
+    fun setEmailCodeMode(enabled: Boolean) {
+        val state = _uiState.value
+        if (state.stage != AuthStage.SignedOut || state.isBusy) return
+        _uiState.update {
+            it.copy(emailCodeMode = enabled, emailCodeAddress = null, resendAfterMillis = 0L,
+                message = null, error = null, errorTitle = null)
+        }
+    }
+
+    fun sendEmailCode(email: String, isOnline: Boolean) {
+        val authRepository = repository ?: return
+        val state = _uiState.value
+        if (state.stage != AuthStage.SignedOut || !state.emailCodeMode || state.isBusy) return
+        val address = state.emailCodeAddress ?: email.trim()
+        if (!EMAIL_ADDRESS.matches(address)) {
+            showError("Check your email", "Enter a valid email address.")
+            return
+        }
+        if (!isOnline) {
+            showError("You're offline", "Connect to the internet to request a sign-in code.")
+            return
+        }
+        val key = address.lowercase()
+        val deadline = resendDeadlines[key]
+        if (deadline != null && elapsedMillis() < deadline) {
+            _uiState.update { it.copy(emailCodeAddress = address, resendAfterMillis = deadline) }
+            return
+        }
+        startEmailCodeOperation("Couldn't send a code", authAction = {
+            authRepository.sendEmailCode(address)
+            val resendAfter = elapsedMillis() + 60_000L
+            resendDeadlines[key] = resendAfter
+            _uiState.update { it.copy(emailCodeAddress = address, resendAfterMillis = resendAfter) }
+        })
+    }
+
+    fun verifyEmailCode(code: String, isOnline: Boolean) {
+        val authRepository = repository ?: return
+        val state = _uiState.value
+        if (state.stage != AuthStage.SignedOut || !state.emailCodeMode || state.isBusy) return
+        val address = state.emailCodeAddress ?: return
+        if (code.length != EMAIL_CODE_LENGTH || code.any { it !in '0'..'9' }) {
+            showError("Check the code", "Enter the six digits from your email.")
+            return
+        }
+        if (!isOnline) {
+            showError("You're offline", "Connect to the internet to verify your code.")
+            return
+        }
+        startEmailCodeOperation("Couldn't verify the code", verifying = true, authAction = {
+            authRepository.verifyEmailCode(address, code)
+        })
+    }
+
+    private fun startEmailCodeOperation(title: String, verifying: Boolean = false, authAction: suspend () -> Unit) {
+        _uiState.update { it.copy(isBusy = true, message = null, error = null, errorTitle = null) }
+        viewModelScope.launch {
+            try {
+                authAction()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                val body = when {
+                    error.isNetworkFailure() -> "Check your connection and try again."
+                    (error as? AuthRestException)?.errorCode in setOf(
+                        AuthErrorCode.OverRequestRateLimit, AuthErrorCode.OverEmailSendRateLimit,
+                    ) -> "Wait a minute before trying again."
+                    verifying -> "Check the code or request a new one if it has expired."
+                    else -> "Make sure you have an account with this email, then try again."
+                }
+                showError(title, body)
+            } finally {
+                _uiState.update { it.copy(isBusy = false) }
             }
         }
     }
@@ -190,12 +300,14 @@ class AuthViewModel(
 
     fun signOut() {
         val authRepository = repository ?: return
+        val user = _uiState.value.userId
 
         viewModelScope.launch {
             _uiState.update { it.copy(isBusy = true, error = null) }
 
             runCatching {
                 authRepository.signOut()
+                user?.let { biometricStore?.setEnabled(it, false) }
             }.onFailure { throwable ->
                 _uiState.update {
                     it.copy(
@@ -206,6 +318,22 @@ class AuthViewModel(
                 }
             }
         }
+    }
+
+    fun confirmBiometricUnlock(expectedUser: String) {
+        val state = _uiState.value
+        if (state.stage != AuthStage.BiometricLocked || state.userId != expectedUser || state.isBusy) return
+        unlockedUser = expectedUser
+        _uiState.update { it.copy(stage = AuthStage.SignedIn, error = null, errorTitle = null) }
+    }
+
+    fun setBiometricEnabled(expectedUser: String, enabled: Boolean) {
+        val state = _uiState.value
+        if (state.stage != AuthStage.SignedIn || state.userId != expectedUser || state.isBusy) return
+        val store = biometricStore ?: return
+        store.setEnabled(expectedUser, enabled)
+        unlockedUser = expectedUser.takeIf { enabled }
+        _uiState.update { it.copy(biometricEnabled = enabled) }
     }
 
     fun clearFeedback() {
@@ -272,6 +400,10 @@ class AuthViewModel(
         _uiState.update { it.copy(message = null, errorTitle = title, error = body) }
     }
 }
+
+internal const val EMAIL_CODE_LENGTH = 6
+private val EMAIL_ADDRESS = Regex("""[^\s@]+@[^\s@]+\.[^\s@]+""")
+internal fun authElapsedMillis(): Long = System.nanoTime() / 1_000_000L
 
 /**
  * Authentication feature: turns Supabase/network failures into a short, friendly title and body.

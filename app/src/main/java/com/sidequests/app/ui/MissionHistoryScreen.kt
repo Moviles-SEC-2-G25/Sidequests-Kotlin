@@ -31,13 +31,11 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -48,8 +46,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.sidequests.app.data.history.HistoryLoad
-import com.sidequests.app.data.history.HistorySource
 import com.sidequests.app.domain.HistoryEntry
 import com.sidequests.app.domain.HistoryFilter
 import com.sidequests.app.domain.HistoryMonth
@@ -71,13 +67,14 @@ private fun count(n: Int, one: String, many: String) = "${thousands(n)} ${if (n 
 private val reasons = AbandonmentReason.entries.associate { it.code to "${it.emoji} ${it.label}" }
 
 @Composable
-fun MissionHistoryRoute(state: SidequestsUiState, viewModel: AppViewModel, online: Boolean) {
+fun MissionHistoryRoute(
+    state: SidequestsUiState,
+    viewModel: AppViewModel,
+    online: Boolean,
+    controller: MissionHistoryController,
+    onRequestLocation: () -> Unit,
+) {
     val userId = state.accountUserId ?: return
-    val scope = rememberCoroutineScope()
-    val source = remember(viewModel) { viewModel.missionHistorySource ?: HistorySource { _, _ -> HistoryLoad(null,false) } }
-    val controller = remember(userId, source, scope) { MissionHistoryController(userId, source, scope) }
-    DisposableEffect(controller) { onDispose { controller.close() } }
-    LaunchedEffect(controller, online) { controller.connectivityChanged(online) }
     val historyState by controller.state.collectAsStateWithLifecycle()
     var evidenceEntry by remember(userId) { mutableStateOf<HistoryEntry?>(null) }
     val thumbnails = remember(userId) { EvidenceThumbnails() }
@@ -95,7 +92,7 @@ fun MissionHistoryRoute(state: SidequestsUiState, viewModel: AppViewModel, onlin
     } else if (state.screen == AppScreen.QuestDetail) {
         BackHandler { viewModel.navigate(AppScreen.MissionHistory) }
         QuestDetailScreen(viewModel.selectedQuest(), viewModel,
-            onBack = { viewModel.navigate(AppScreen.MissionHistory) })
+            onBack = { viewModel.navigate(AppScreen.MissionHistory) }, onRequestLocation = onRequestLocation)
     } else {
         val back = { viewModel.navigate(AppScreen.Profile) }
         BackHandler(onBack = back)

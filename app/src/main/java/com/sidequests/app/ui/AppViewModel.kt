@@ -73,6 +73,10 @@ import com.sidequests.app.domain.QuestStepCompletionPolicy
 import com.sidequests.app.domain.QuestAlternativeRecommender
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.isActive
+import com.sidequests.app.domain.isWithinCheckInRange
+import com.sidequests.app.domain.exploreAdaptationMessage
+import com.sidequests.app.domain.exploreCatalogue
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
@@ -160,6 +164,19 @@ class AppViewModel(
     private val alternativeRecommender = QuestAlternativeRecommender()
     private var alternativeJob: Job? = null
     private var openedFromSmartPicksId: String? = null
+    private var recommendationJourney: RecommendationJourney? = null
+    private var recommendationJob: Job? = null
+    private var recommendationInputs: RecommendationInputs? = null
+
+    private data class RecommendationInputs(
+        val minutes: Int,
+        val preferences: UserPreferences,
+        val exclusions: Set<String>,
+    )
+
+    private class RecommendationJourney(val batchId: String?, val startedAt: Long = System.nanoTime()) {
+        var interactions: Int = 0
+    }
     private val bq8RecordedExposures = mutableSetOf<String>()
     private var attachedUserId: String? = null
     private var accountGeneration = 0
@@ -330,6 +347,9 @@ class AppViewModel(
     }
 
     fun detachAccount() {
+        recommendationJob?.cancel()
+        recommendationJourney = null
+        openedFromSmartPicksId = null
         resetBq11()
         (recommendationRepository as? CachedRecommendationRepository)?.useAccountScope(null)
         bq8RecordedExposures.clear()
@@ -346,6 +366,9 @@ class AppViewModel(
 
     fun attachAccount(userId: String) {
         if (attachedUserId == userId && _uiState.value.accountUserId == userId && _uiState.value.localStateError == null) return
+        recommendationJob?.cancel()
+        recommendationJourney = null
+        openedFromSmartPicksId = null
         historyOwner = null
         (recommendationRepository as? CachedRecommendationRepository)?.useAccountScope(userId)
         bq8RecordedExposures.clear()
@@ -377,9 +400,15 @@ class AppViewModel(
                 if (open.isNotEmpty()) {
                     _uiState.update { state -> state.copy(
                         attemptIdByQuest = open.associate { it.questId to it.attemptId },
-                        progressByQuest = open.associate { it.questId to QuestProgress(currentStep = it.currentStep, completedSteps = it.completedSteps) },
+                        progressByQuest = open.associate {
+                            it.questId to QuestProgress(currentStep = it.currentStep, completedSteps = it.completedSteps, paused = it.paused)
+                        },
                         activeQuestId = open.last().questId,
-                        screen = if (repository.questById(open.last().questId).isGroup) AppScreen.GroupQuest else AppScreen.ActiveQuest,
+                        screen = when {
+                            open.last().paused -> AppScreen.Explorer
+                            repository.questById(open.last().questId).isGroup -> AppScreen.GroupQuest
+                            else -> AppScreen.ActiveQuest
+                        },
                     ) }
                 }
                 applyStoredPhotos(saved, userId)
@@ -476,7 +505,9 @@ class AppViewModel(
                         // The snapshot and its queued server change are committed together.
                         store.update { saved ->
                             saved.copy(
-                                photoQuests = saved.photoQuests + (attemptId to PhotoQuestSnapshot(userId, questId, attemptId, progress.currentStep, progress.completedSteps, closed)),
+                                photoQuests = saved.photoQuests + (attemptId to PhotoQuestSnapshot(
+                                    userId, questId, attemptId, progress.currentStep, progress.completedSteps, closed, progress.paused,
+                                )),
                                 progressOps = if (op == null) saved.progressOps else saved.progressOps + op,
                             )
                         }
@@ -542,7 +573,8 @@ class AppViewModel(
             sessionId = analyticsSessionId,
             eventType = eventType,
             availableMinutes = state.availableTime,
-            preferences = state.preferences,
+            preferences = if (eventType == "recommendation_accepted") state.recommendationPreferences()
+                else state.preferences,
             quest = quest,
             metadata = metadata,
         )
@@ -588,6 +620,21 @@ class AppViewModel(
                 }
         }
     }
+
+    fun refreshContextIfStale() {
+        val age = System.currentTimeMillis() - lastContextReadAtMillis
+        if (_contextState.value.loading) return
+        if (age >= BATTERY_SAVER_REUSE_MILLIS) {
+            refreshContext()
+        } else {
+            val localTime = timeOfDayFromHour(ZonedDateTime.now().hour)
+            _contextState.update {
+                if (it.context.timeOfDay == localTime) it else it.copy(context = it.context.copy(timeOfDay = localTime))
+            }
+        }
+    }
+
+    suspend fun destinationWeather(location: LocationData, online: Boolean) = contextManager.weatherAt(location, online)
 
     /**
      * External service feature: reverse geocoding with Nominatim. Offline, or when the lookup
@@ -678,6 +725,31 @@ class AppViewModel(
 
     fun allQuests(): List<Quest> = repository.allQuests()
 
+    fun exploreQuests(): List<Quest> {
+        val state = _uiState.value
+        return exploreCatalogue(
+            repository.allQuests(), state.availableTime, state.preferences.locationMode,
+            state.selectedCategory, state.skippedQuestIds, _contextState.value.context.exploreAdaptationMessage() != null,
+        )
+    }
+
+    fun openSurpriseQuest(previouslyCompleted: Set<String>): String? {
+        val state = _uiState.value
+        if (state.screen != AppScreen.Explorer) return null
+        if (state.catalogLoading) return "Quests are still loading."
+        if (repository.catalogueOrigin() == QuestCatalogueOrigin.Sample) {
+            return if (_deviceStatus.value.isOnline) "Refresh the catalogue to use Surprise Quest."
+                else "Connect once to save quests before using Surprise Quest offline."
+        }
+        val quest = exploreQuests().filter { candidate ->
+            candidate.id !in previouslyCompleted && candidate.steps.isNotEmpty() &&
+                (state.progressByQuest[candidate.id]?.completedSteps?.size ?: 0) < candidate.steps.size
+        }.randomOrNull() ?: return "No quests match your current filters."
+        trackEvent("shake_surprise", quest, buildJsonObject { put("quest_id", quest.id) })
+        openQuestDetail(quest.id)
+        return null
+    }
+
     fun addQuestToOfflinePack(questId: String) {
         viewModelScope.launch {
             offlinePackManager?.addQuest(questId, isOnline = _deviceStatus.value.isOnline)
@@ -746,6 +818,7 @@ class AppViewModel(
             skippedIds = state.skippedQuestIds + socialExclusions(state),
             completedIds = completedIds,
             inProgressIds = inProgressIds,
+            sessionSocialLevel = state.sessionSocialLevel,
         )
         // Context adaptation remains available for offline/sample fallback.
         return SocialComfortAdvisor.adapt(
@@ -784,8 +857,23 @@ class AppViewModel(
                 put("rank", rank)
                 state.bq8Variant?.let { put("variant", it) }
                 put("source", "rpc_viewport")
+                put("social_level_source", if (state.sessionSocialLevel == null) "profile" else "session")
             },
         )
+    }
+
+    fun smartPickVisible(questId: String) {
+        val state = _uiState.value
+        if (state.screen != AppScreen.Explorer || state.catalogLoading || state.recommendationLoading) return
+        if (questId in state.remoteRecommendationIds) {
+            beginRecommendationJourney(state)
+            bq8RecommendationVisible(questId)
+        }
+    }
+
+    private fun beginRecommendationJourney(state: SidequestsUiState): RecommendationJourney {
+        return recommendationJourney
+            ?: RecommendationJourney(state.bq8FreshBatchId).also { recommendationJourney = it }
     }
 
 
@@ -835,23 +923,25 @@ class AppViewModel(
     fun refreshRecommendations() {
         val remote = recommendationRepository ?: return
         val state = _uiState.value
-        if (state.recommendationLoading) return
+        val inputs = RecommendationInputs(
+            state.availableTime, state.recommendationPreferences(), state.skippedQuestIds + socialExclusions(state),
+        )
+        if (state.recommendationLoading && recommendationInputs == inputs) return
+        recommendationJob?.cancel()
+        recommendationInputs = inputs
         val generation = accountGeneration
 
-        viewModelScope.launch {
-            _uiState.update {
-                it.copy(recommendationLoading = true, recommendationError = null)
-            }
-
+        _uiState.update { it.copy(recommendationLoading = true, recommendationError = null) }
+        recommendationJob = viewModelScope.launch {
             remote.recommend(
-                availableMinutes = state.availableTime,
-                preferences = state.preferences,
+                availableMinutes = inputs.minutes,
+                preferences = inputs.preferences,
                 // BQ14: quests above the comfort level are excluded on the server too.
-                excludedQuestIds = state.skippedQuestIds + socialExclusions(state),
+                excludedQuestIds = inputs.exclusions,
                 limit = 3,
             )
                 .onSuccess { results ->
-                    if (generation != accountGeneration) return@onSuccess
+                    if (!isActive || generation != accountGeneration) return@onSuccess
                     val ids = results.map { it.questId }
                     val source = (remote as? CachedRecommendationRepository)?.lastSource
                     val isFreshRpc = source == null || source == CachedRecommendationRepository.Source.NETWORK
@@ -882,7 +972,7 @@ class AppViewModel(
                     // ExplorerScreen records one impression when each card enters its viewport.
                 }
                 .onFailure { throwable ->
-                    if (generation != accountGeneration) return@onFailure
+                    if (!isActive || generation != accountGeneration) return@onFailure
                     failureReporter.report(AppModule.RECOMMENDATIONS, throwable, null)
                     _uiState.update {
                         it.copy(
@@ -994,17 +1084,59 @@ class AppViewModel(
     }
 
     fun navigate(screen: AppScreen) {
+        if (screen != AppScreen.Explorer && screen != AppScreen.QuestDetail) recommendationJourney = null
         if (screen != AppScreen.QuestAlternatives) alternativeJob?.cancel()
         if (screen != AppScreen.QuestDetail) openedFromSmartPicksId = null
         _uiState.update {
-            it.copy(screen = screen, detailFromHistory = false, questAlternatives = if (screen == AppScreen.QuestAlternatives) it.questAlternatives else null)
+            it.copy(
+                screen = screen,
+                detailFromHistory = false,
+                detailOrigin = AppScreen.Explorer,
+                groupChallengesOrigin = if (screen == AppScreen.GroupChallenges) it.screen else it.groupChallengesOrigin,
+                questAlternatives = if (screen == AppScreen.QuestAlternatives) it.questAlternatives else null,
+            )
         }
     }
 
-    fun openQuestDetail(questId: String, fromSmartPicks: Boolean = false) {
+    fun openQuestDetail(questId: String, fromSmartPicks: Boolean = false, origin: AppScreen = AppScreen.Explorer) {
         alternativeJob?.cancel()
         openedFromSmartPicksId = if (fromSmartPicks) questId else null
-        _uiState.update { it.copy(selectedQuestId = questId, screen = AppScreen.QuestDetail, detailFromHistory = false, questAlternatives = null) }
+        val state = _uiState.value
+        if (fromSmartPicks && questId in state.remoteRecommendationIds) {
+            beginRecommendationJourney(state).interactions++
+        }
+        _uiState.update {
+            it.copy(selectedQuestId = questId, screen = AppScreen.QuestDetail, detailFromHistory = false,
+                detailOrigin = origin, questAlternatives = null)
+        }
+    }
+
+    fun openSimilarQuest(questId: String, rank: Int) {
+        val state = _uiState.value
+        if (state.screen != AppScreen.Rating) return
+        val quest = repository.allQuests().firstOrNull { it.id == questId } ?: return
+        trackEvent("similar_quest_opened", quest, buildJsonObject {
+            put("source_quest_id", state.activeQuestId)
+            put("rank", rank)
+        })
+        openQuestDetail(questId, origin = AppScreen.Rating)
+    }
+
+    fun closeQuestDetail() = navigate(_uiState.value.detailOrigin)
+
+    fun closeGroupChallenges() = navigate(_uiState.value.groupChallengesOrigin)
+
+    fun openQuestTab() {
+        val questId = _uiState.value.activeQuestId
+        if (openAttemptProgress(questId) != null) {
+            resumeQuest(questId)
+            return
+        }
+        navigate(when {
+            !hasActiveQuest() -> AppScreen.QuestHome
+            activeQuest().isGroup -> AppScreen.GroupQuest
+            else -> AppScreen.ActiveQuest
+        })
     }
 
     internal fun evidenceQuestSteps(questId: String): List<com.sidequests.app.model.QuestStep> =
@@ -1019,9 +1151,21 @@ class AppViewModel(
         return true
     }
 
-    fun acceptQuest(questId: String) {
+    fun startInstantPlan(questId: String) {
+        if (_uiState.value.screen != AppScreen.Explorer) return
+        if (openAttemptProgress(questId) != null) {
+            resumeQuest(questId)
+            return
+        }
+        acceptQuest(questId, instantPlan = true)
+    }
+
+    fun acceptQuest(questId: String) = acceptQuest(questId, instantPlan = false)
+
+    private fun acceptQuest(questId: String, instantPlan: Boolean) {
         alternativeJob?.cancel()
         val quest = repository.questById(questId)
+        if (instantPlan && quest.steps.isEmpty()) return
         val currentState = _uiState.value
         val existingProgress = currentState.progressByQuest[questId]
         val previousAttemptFinished = existingProgress?.let { progress ->
@@ -1043,13 +1187,16 @@ class AppViewModel(
                 return
             }
         }
+        val sourceQuestId = if (instantPlan) questId else openedFromSmartPicksId
         val fromRecommendation = isRecommendationAcceptance(
             questId = questId,
-            openedFromSmartPicksId = openedFromSmartPicksId,
+            openedFromSmartPicksId = sourceQuestId,
             currentRemoteRecommendations = currentState.remoteRecommendationIds,
             startsNewAttempt = createsNewAttempt,
         )
-        val firstOnboardingRecommendationSource = openedFromSmartPicksId == questId
+        val firstOnboardingRecommendationSource = sourceQuestId == questId
+        val journey = if (fromRecommendation) beginRecommendationJourney(currentState) else null
+        recommendationJourney = null
         openedFromSmartPicksId = null
         val attemptId = if (createsNewAttempt) {
             UUID.randomUUID().toString()
@@ -1058,15 +1205,12 @@ class AppViewModel(
         }
 
         _uiState.update { state ->
-            val progressMap = if (questId in state.progressByQuest && !previousAttemptFinished) {
-                state.progressByQuest
-            } else {
-                state.progressByQuest + (questId to QuestProgress())
-            }
+            val progress = state.progressByQuest[questId]?.takeUnless { previousAttemptFinished }
+                ?.copy(paused = false) ?: QuestProgress()
 
             state.copy(
                 activeQuestId = questId,
-                progressByQuest = progressMap,
+                progressByQuest = state.progressByQuest + (questId to progress),
                 skippedQuestIds = state.skippedQuestIds - questId,
                 attemptIdByQuest = state.attemptIdByQuest + (questId to attemptId),
                 screen = if (quest.isGroup) AppScreen.GroupQuest else AppScreen.ActiveQuest,
@@ -1076,13 +1220,23 @@ class AppViewModel(
             )
         }
 
+        val recommendationMetadata = buildJsonObject {
+            put("attempt_id", attemptId)
+            if (journey != null) {
+                put("start_path", if (instantPlan) "instant_plan" else "standard")
+                put("seconds_to_start", (System.nanoTime() - journey.startedAt).coerceAtLeast(0) / 1_000_000_000.0)
+                put("interactions_to_start", journey.interactions)
+                journey.batchId?.let { put("batch_id", it) }
+                put("social_level_source", if (currentState.sessionSocialLevel == null) "profile" else "session")
+            }
+        }
         val acceptedProgress = _uiState.value.progressByQuest[questId] ?: QuestProgress()
         if (createsNewAttempt && progressQueueEnabled) {
             updateJourney({ it.firstRecommendationAccepted(questId, firstOnboardingRecommendationSource, attemptId) })
             val attemptMetadata = buildJsonObject { put("attempt_id", attemptId) }
             val events = listOfNotNull(
                 confirmedEvent("quest_accepted", quest, attemptMetadata),
-                if (fromRecommendation) confirmedEvent("recommendation_accepted", quest, attemptMetadata) else null,
+                if (fromRecommendation) confirmedEvent("recommendation_accepted", quest, recommendationMetadata) else null,
             )
             persistActiveQuestProgress(
                 questId, attemptId, acceptedProgress,
@@ -1102,7 +1256,7 @@ class AppViewModel(
                 onSuccess = {
                     trackEvent("quest_accepted", quest)
                     if (fromRecommendation) {
-                        trackEvent("recommendation_accepted", quest)
+                        trackEvent("recommendation_accepted", quest, recommendationMetadata)
                     }
                 },
             ) {
@@ -1113,6 +1267,7 @@ class AppViewModel(
     }
 
     fun skipQuest(questId: String) {
+        recommendationJourney?.let { it.interactions++ }
         val quest = repository.questById(questId)
         _uiState.update {
             it.copy(
@@ -1130,6 +1285,9 @@ class AppViewModel(
     }
 
     fun setAvailableTime(minutes: Int) {
+        if (_uiState.value.screen == AppScreen.Explorer) {
+            recommendationJourney?.let { it.interactions++ }
+        }
         val choice = TimeChoice(timeOfDayFromHour(ZonedDateTime.now().hour), minutes)
         _uiState.update {
             it.copy(
@@ -1173,6 +1331,7 @@ class AppViewModel(
     }
 
     fun setCategory(category: String) {
+        recommendationJourney?.let { it.interactions++ }
         _uiState.update { it.copy(selectedCategory = category) }
     }
 
@@ -1295,6 +1454,7 @@ class AppViewModel(
     }
 
     fun setLocationMode(mode: String) {
+        if (_uiState.value.screen == AppScreen.Explorer) recommendationJourney?.let { it.interactions++ }
         val normalized = mode.lowercase()
         _uiState.update {
             it.copy(
@@ -1334,6 +1494,21 @@ class AppViewModel(
         }
     }
 
+    fun setSessionSocialLevel(level: SocialLevel?) {
+        if (_uiState.value.sessionSocialLevel == level) return
+        recommendationJourney?.let { it.interactions++ }
+        _uiState.update {
+            it.copy(
+                sessionSocialLevel = level,
+                remoteRecommendationIds = emptyList(),
+                bq8FreshBatchId = null,
+                bq8Variant = null,
+                bq8RankByQuestId = emptyMap(),
+            )
+        }
+        refreshRecommendations()
+    }
+
 
     /**
      * Whether [stepIndex] of the active quest can be marked complete. Finishing the quest also
@@ -1369,13 +1544,19 @@ class AppViewModel(
 
     /** Explore -> the quest already in progress: continue the same attempt instead of a new one. */
     fun resumeQuest(questId: String) {
-        if (openAttemptProgress(questId) == null) return
+        val progress = openAttemptProgress(questId) ?: return
         alternativeJob?.cancel()
         openedFromSmartPicksId = null
         val quest = repository.questById(questId)
+        val resumed = progress.copy(paused = false)
+        if (progress.paused) {
+            val attemptId = _uiState.value.attemptIdByQuest.getValue(questId)
+            persistActiveQuestProgress(questId, attemptId, resumed)
+        }
         _uiState.update {
             it.copy(
                 activeQuestId = questId,
+                progressByQuest = it.progressByQuest + (questId to resumed),
                 screen = if (quest.isGroup) AppScreen.GroupQuest else AppScreen.ActiveQuest,
                 detailFromHistory = false,
                 questAlternatives = null,
@@ -1384,11 +1565,18 @@ class AppViewModel(
         }
     }
 
-    fun completeCurrentStep() {
+    fun completeCurrentStep(
+        expectedAttemptId: String? = _uiState.value.attemptIdByQuest[_uiState.value.activeQuestId],
+        expectedStepIndex: Int = activeProgress().currentStep,
+    ) {
         val state = _uiState.value
         val questId = state.activeQuestId
+        val attemptId = state.attemptIdByQuest[questId] ?: return
+        if (attemptId != expectedAttemptId) return
         val quest = repository.questById(questId)
         val current = state.progressByQuest[questId] ?: QuestProgress()
+        if (current.paused || current.abandoned || current.currentStep != expectedStepIndex ||
+            expectedStepIndex in current.completedSteps) return
         if (quest.steps.getOrNull(current.currentStep) == null) return
         val completionDecision = stepCompletionDecision(current.currentStep)
         if (!completionDecision.allowed) {
@@ -1429,7 +1617,6 @@ class AppViewModel(
             recordDifficultyOutcome(DifficultyOutcome(quest.difficulty, completed = true))
         }
 
-        val attemptId = _uiState.value.attemptIdByQuest[questId] ?: return
         val op = progressOp(PendingProgressOp.PROGRESS, questId, attemptId, nextStep, nextCompleted, completed)
             ?.let(::attachBq11Evidence)
         persistActiveQuestProgress(questId, attemptId, _uiState.value.progressByQuest.getValue(questId), closed = completed, op = op)
@@ -1445,6 +1632,33 @@ class AppViewModel(
                 completed = completed,
             ) ?: Result.success(Unit)
         }
+    }
+
+    fun checkInAtLocation(
+        account: String,
+        attemptId: String,
+        stepIndex: Int,
+        location: LocationData,
+        accuracyMeters: Float,
+    ) {
+        val state = _uiState.value
+        if (state.accountUserId != account || state.attemptIdByQuest[state.activeQuestId] != attemptId) return
+        val quest = activeQuest()
+        if (quest.isGroup) return
+        val progress = openAttemptProgress(quest.id) ?: return
+        if (progress.paused || progress.currentStep != stepIndex || stepIndex in progress.completedSteps) return
+        val step = quest.steps.getOrNull(stepIndex)?.takeIf { it.requiresLocation } ?: return
+        if (step.requiresPhoto && stepIndex !in progress.uploadedPhotoProofByStep) return
+        if (!quest.isWithinCheckInRange(location, accuracyMeters) || !stepCompletionDecision(stepIndex).allowed) return
+
+        completeCurrentStep(attemptId, stepIndex)
+        _uiState.update {
+            it.copy(automaticCheckInMessage = "Location verified · step ${stepIndex + 1} completed")
+        }
+    }
+
+    fun clearAutomaticCheckInMessage() {
+        _uiState.update { it.copy(automaticCheckInMessage = null) }
     }
 
     fun jumpToStep(step: Int) {
@@ -1647,12 +1861,12 @@ class AppViewModel(
     fun saveAndExit() {
         val state = _uiState.value
         val questId = state.activeQuestId
-        val current = state.progressByQuest[questId] ?: QuestProgress()
+        val current = (state.progressByQuest[questId] ?: QuestProgress()).copy(paused = true, abandonReason = null)
 
         _uiState.update {
             it.copy(
                 progressByQuest = it.progressByQuest + (
-                    questId to current.copy(abandonReason = null)
+                    questId to current
                 ),
                 screen = AppScreen.Explorer,
                 progressSyncError = null,
@@ -1866,6 +2080,12 @@ class AppViewModel(
         }
     }
 
+    fun skipRating() {
+        _uiState.update {
+            it.copy(screen = AppScreen.Explorer, attemptIdByQuest = it.attemptIdByQuest - it.activeQuestId)
+        }
+    }
+
     fun recordGroupChallengeUnconfirmed(accountId: String?, action: com.sidequests.app.data.group.GroupAction) {
         if (accountId == null || accountId != attachedUserId) return
         trackEvent("group_challenge_client_unconfirmed", metadata = buildJsonObject {
@@ -1885,6 +2105,8 @@ class AppViewModel(
         val store = localStore
         // Capture the interaction time before asynchronous file I/O begins.
         val eventOccurredAt = java.time.Instant.now().toString()
+        val preferences = if (eventType.startsWith("recommendation_")) state.recommendationPreferences()
+            else state.preferences
 
         viewModelScope.launch {
             // Recommendation events support BQ9's secondary funnel. Queue them
@@ -1899,7 +2121,7 @@ class AppViewModel(
                             sessionId = analyticsSessionId,
                             eventType = eventType,
                             availableMinutes = state.availableTime,
-                            preferences = state.preferences,
+                            preferences = preferences,
                             quest = quest,
                             metadata = metadata,
                             occurredAt = eventOccurredAt,
@@ -1911,10 +2133,11 @@ class AppViewModel(
                     // If local storage is unavailable, preserve the previous
                     // direct-send behavior rather than blocking app navigation.
                     analytics.track(
+                        expectedUserId = userId,
                         sessionId = analyticsSessionId,
                         eventType = eventType,
                         availableMinutes = state.availableTime,
-                        preferences = state.preferences,
+                        preferences = preferences,
                         quest = quest,
                         metadata = metadata,
                     )
@@ -1928,10 +2151,11 @@ class AppViewModel(
                 return@launch
             }
             analytics.track(
+                expectedUserId = userId,
                 sessionId = analyticsSessionId,
                 eventType = eventType,
                 availableMinutes = state.availableTime,
-                preferences = state.preferences,
+                preferences = preferences,
                 quest = quest,
                 metadata = metadata,
             )
@@ -1943,7 +2167,9 @@ class AppViewModel(
         onSuccess: (() -> Unit)? = null,
         operation: suspend () -> Result<Unit>,
     ) {
+        val generation = accountGeneration
         viewModelScope.launch {
+            if (generation != accountGeneration) return@launch
             _uiState.update {
                 it.copy(
                     progressSyncing = true,
@@ -1954,6 +2180,7 @@ class AppViewModel(
 
             operation()
                 .onSuccess {
+                    if (generation != accountGeneration) return@onSuccess
                     _uiState.update {
                         it.copy(
                             progressSyncing = false,
@@ -1964,6 +2191,7 @@ class AppViewModel(
                     onSuccess?.invoke()
                 }
                 .onFailure { throwable ->
+                    if (generation != accountGeneration) return@onFailure
                     failureReporter.report(AppModule.QUEST_PROGRESS, throwable, null)
                     _uiState.update {
                         it.copy(
@@ -1996,6 +2224,7 @@ class AppViewModel(
                 selectedQuestId = questId,
                 notificationQuestId = null,
                 screen = AppScreen.QuestDetail,
+                detailOrigin = AppScreen.Explorer,
             )
         }
     }

@@ -44,6 +44,7 @@ class Bq9OfflineRecommendationFlowTest {
         var schedules = 0
         val analytics = object : AnalyticsRepository {
             override suspend fun track(
+                expectedUserId: String?,
                 sessionId: String,
                 eventType: String,
                 availableMinutes: Int,

@@ -17,6 +17,8 @@ data class WeatherData(
     val temperatureCelsius: Double,
     val condition: WeatherCondition,
     val isStale: Boolean = false,
+    val rainProbabilityPercent: Int? = null,
+    val fetchedAtMillis: Long? = null,
 )
 
 enum class TimeOfDay { MORNING, AFTERNOON, EVENING, NIGHT }

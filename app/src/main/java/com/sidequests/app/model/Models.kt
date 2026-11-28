@@ -8,6 +8,7 @@ data class QuestStep(
     val title: String,
     val description: String,
     val requiresPhoto: Boolean = false,
+    val requiresLocation: Boolean = false,
 )
 
 data class GroupMember(
@@ -37,6 +38,9 @@ data class Quest(
     val groupMembers: List<GroupMember> = emptyList(),
     val steps: List<QuestStep>,
     val tags: List<String>,
+    val locationName: String? = null,
+    val latitude: Double? = null,
+    val longitude: Double? = null,
 )
 
 data class QuestProgress(
@@ -48,6 +52,7 @@ data class QuestProgress(
     val photoProofErrorByStep: Map<Int, String> = emptyMap(),
     val abandoned: Boolean = false,
     val abandonReason: AbandonmentReason? = null,
+    val paused: Boolean = false,
 ) {
     fun hasPhotoProof(stepIndex: Int): Boolean = stepIndex in localPhotoProofByStep
 }
@@ -71,6 +76,9 @@ enum class AppScreen {
     Auth,
     Onboarding,
     Explorer,
+    Nearby,
+    Social,
+    QuestHome,
     QuestDetail,
     VarietyDiscovery,
     GroupChallenges,
@@ -81,6 +89,7 @@ enum class AppScreen {
     Rating,
     GroupQuest,
     Profile,
+    Statistics,
     OfflinePack,
     /** BQ14 (Sprint 4, #87). */
     SocialComfort,
@@ -103,7 +112,10 @@ data class SidequestsUiState(
     val selectedQuestId: String = "botanical-garden",
     val activeQuestId: String = "botanical-garden",
     val detailFromHistory: Boolean = false,
+    val detailOrigin: AppScreen = AppScreen.Explorer,
+    val groupChallengesOrigin: AppScreen = AppScreen.Explorer,
     val preferences: UserPreferences = UserPreferences(),
+    val sessionSocialLevel: SocialLevel? = null,
     val availableTime: Int = 30,
     val selectedCategory: String = "All",
     val progressByQuest: Map<String, QuestProgress> = emptyMap(),
@@ -113,6 +125,7 @@ data class SidequestsUiState(
     val progressSyncing: Boolean = false,
     val progressSyncError: String? = null,
     val progressSyncMessage: String? = null,
+    val automaticCheckInMessage: String? = null,
     val catalogLoading: Boolean = false,
     val catalogError: String? = null,
     val catalogSource: String = "Local catalogue",
@@ -139,4 +152,7 @@ data class SidequestsUiState(
     val socialComfort: com.sidequests.app.domain.SocialComfortSettings = com.sidequests.app.domain.SocialComfortSettings(),
     /** BQ14: stable experiment arm of the account (sets the default of the adaptation switch). */
     val socialArm: String? = null,
-)
+) {
+    fun recommendationPreferences(): UserPreferences =
+        sessionSocialLevel?.let { preferences.copy(socialLevel = it) } ?: preferences
+}

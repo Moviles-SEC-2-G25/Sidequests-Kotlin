@@ -5,6 +5,7 @@ import com.sidequests.app.data.remote.QuestStepDto
 import com.sidequests.app.data.remote.toDomain
 import com.sidequests.app.model.LocationMode
 import com.sidequests.app.model.Quest
+import com.sidequests.app.model.SocialLevel
 import com.sidequests.app.model.UserPreferences
 import io.github.jan.supabase.SupabaseClient
 import io.github.jan.supabase.postgrest.from
@@ -26,6 +27,7 @@ interface SidequestsRepository {
         skippedIds: Set<String>,
         completedIds: Set<String>,
         inProgressIds: Set<String>,
+        sessionSocialLevel: SocialLevel? = null,
     ): List<Quest>
 }
 
@@ -45,6 +47,7 @@ class InMemorySidequestsRepository : SidequestsRepository {
         skippedIds: Set<String>,
         completedIds: Set<String>,
         inProgressIds: Set<String>,
+        sessionSocialLevel: SocialLevel?,
     ): List<Quest> = rankRecommendations(
         quests = QuestSeed.quests,
         availableMinutes = availableMinutes,
@@ -52,6 +55,7 @@ class InMemorySidequestsRepository : SidequestsRepository {
         skippedIds = skippedIds,
         completedIds = completedIds,
         inProgressIds = inProgressIds,
+        sessionSocialLevel = sessionSocialLevel,
     )
 }
 
@@ -139,6 +143,7 @@ class SupabaseSidequestsRepository(
         skippedIds: Set<String>,
         completedIds: Set<String>,
         inProgressIds: Set<String>,
+        sessionSocialLevel: SocialLevel?,
     ): List<Quest> = rankRecommendations(
         quests = cache,
         availableMinutes = availableMinutes,
@@ -146,6 +151,7 @@ class SupabaseSidequestsRepository(
         skippedIds = skippedIds,
         completedIds = completedIds,
         inProgressIds = inProgressIds,
+        sessionSocialLevel = sessionSocialLevel,
     )
 }
 
@@ -156,6 +162,7 @@ private fun rankRecommendations(
     skippedIds: Set<String>,
     completedIds: Set<String>,
     inProgressIds: Set<String>,
+    sessionSocialLevel: SocialLevel?,
 ): List<Quest> {
     return quests
         .asSequence()
@@ -180,6 +187,7 @@ private fun rankRecommendations(
             }
 
             if (quest.difficulty == preferences.difficulty) score += 2
+            if (quest.socialLevel == sessionSocialLevel) score += 2
 
             if (
                 preferences.locationMode == "all" ||

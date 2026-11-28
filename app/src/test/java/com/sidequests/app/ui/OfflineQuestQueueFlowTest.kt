@@ -4,12 +4,16 @@ import androidx.lifecycle.ViewModelStore
 import androidx.lifecycle.viewModelScope
 import com.sidequests.app.context.*
 import com.sidequests.app.data.InMemorySidequestsRepository
+import com.sidequests.app.data.SidequestsRepository
 import com.sidequests.app.data.analytics.AnalyticsRepository
 import com.sidequests.app.data.local.LexLocalStore
 import com.sidequests.app.data.local.PendingProgressOp
 import com.sidequests.app.data.progress.QuestProgressRepository
+import com.sidequests.app.data.recommendation.RecommendationRepository
+import com.sidequests.app.data.recommendation.RecommendationResult
 import com.sidequests.app.model.AppScreen
 import com.sidequests.app.model.Quest
+import com.sidequests.app.model.SocialLevel
 import com.sidequests.app.model.UserPreferences
 import java.io.File
 import kotlinx.coroutines.Dispatchers
@@ -18,6 +22,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.test.*
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
@@ -49,12 +54,15 @@ class OfflineQuestQueueFlowTest {
         }
     }
 
-    private fun vm(): AppViewModel {
+    private fun vm(
+        recommendations: RecommendationRepository? = null,
+        catalogue: SidequestsRepository = InMemorySidequestsRepository(),
+    ): AppViewModel {
         val location = object : LocationProvider { override suspend fun getCurrentLocation(): LocationData? = null }
         return AppViewModel(
             contextManager = ContextManager(location, MockWeatherProvider()),
-            repository = InMemorySidequestsRepository(), progressRepository = progress,
-            analyticsRepository = analytics, recommendationRepository = null, photoProofRepository = null,
+            repository = catalogue, progressRepository = progress,
+            analyticsRepository = analytics, recommendationRepository = recommendations, photoProofRepository = null,
             localStore = store(), scheduleLocalSync = {}, retryLocalSync = { retries += it },
             localIoDispatcher = dispatcher,
         ).also {
@@ -63,14 +71,149 @@ class OfflineQuestQueueFlowTest {
         }
     }
 
-    private fun TestScope.signedInOffline(): AppViewModel {
-        val vm = vm()
+    private fun TestScope.signedInOffline(
+        recommendations: RecommendationRepository? = null,
+        catalogue: SidequestsRepository = InMemorySidequestsRepository(),
+    ): AppViewModel {
+        val vm = vm(recommendations, catalogue)
         vm.attachAccount("alice")
         advanceUntilIdle()
         vm.skipOnboarding()
         advanceUntilIdle()
         vm.onDeviceStatusChanged(DeviceStatus(isOnline = false))
         return vm
+    }
+
+    @Test fun `precise check-in advances the matching attempt once and queues offline progress`() = runTest(dispatcher) {
+        val repository = InMemorySidequestsRepository()
+        val quest = repository.questById("library-deep-dive").run {
+            copy(latitude = 4.60, longitude = -74.0,
+                steps = listOf(steps.first().copy(requiresPhoto = false, requiresLocation = true)))
+        }
+        val catalogue = object : SidequestsRepository by repository {
+            override fun questById(id: String) = if (id == quest.id) quest else repository.questById(id)
+        }
+        val vm = signedInOffline(catalogue = catalogue)
+        vm.acceptQuest(quest.id)
+        val attempt = vm.uiState.value.attemptIdByQuest.getValue(quest.id)
+        val position = LocationData(4.60, -74.0)
+
+        vm.checkInAtLocation("bob", attempt, 0, position, 20f)
+        vm.checkInAtLocation("alice", attempt, 0, position, 100f)
+        vm.checkInAtLocation("alice", attempt, 0, LocationData(4.61, -74.0), 20f)
+        assertTrue(vm.activeProgress().completedSteps.isEmpty())
+
+        vm.saveAndExit()
+        advanceUntilIdle()
+        assertTrue(store().read().photoQuests.getValue(attempt).paused)
+        vm.checkInAtLocation("alice", attempt, 0, position, 20f)
+        assertTrue(vm.activeProgress().completedSteps.isEmpty())
+        vm.resumeQuest(quest.id)
+        vm.checkInAtLocation("alice", attempt, 0, position, 20f)
+        vm.checkInAtLocation("alice", attempt, 0, position, 20f)
+        advanceUntilIdle()
+
+        assertEquals(setOf(0), vm.activeProgress().completedSteps)
+        val changes = store().read().progressOps.filter { it.type == PendingProgressOp.PROGRESS }
+        assertEquals(1, changes.size)
+        assertTrue(changes.single().completed)
+        assertEquals(attempt, changes.single().attemptId)
+    }
+
+    @Test fun `late taps cannot advance a different step or complete an attempt twice`() = runTest(dispatcher) {
+        val repository = InMemorySidequestsRepository()
+        val quest = repository.questById("library-deep-dive").run {
+            copy(steps = steps.take(2).map { it.copy(requiresPhoto = false) })
+        }
+        val catalogue = object : SidequestsRepository by repository {
+            override fun questById(id: String) = if (id == quest.id) quest else repository.questById(id)
+        }
+        val vm = signedInOffline(catalogue = catalogue)
+        vm.acceptQuest(quest.id)
+        val attempt = vm.uiState.value.attemptIdByQuest.getValue(quest.id)
+
+        vm.completeCurrentStep(attempt, 0)
+        vm.completeCurrentStep(attempt, 0)
+        vm.completeCurrentStep("different-attempt", 1)
+        assertEquals(setOf(0), vm.activeProgress().completedSteps)
+
+        vm.completeCurrentStep(attempt, 1)
+        vm.completeCurrentStep(attempt, 1)
+        vm.detachAccount()
+        vm.attachAccount("bob")
+        advanceUntilIdle()
+
+        val operations = store().read().progressOps.filter { it.type == PendingProgressOp.PROGRESS }
+        assertEquals(listOf(false, true), operations.map { it.completed })
+        assertEquals(1, analytics.events.count { it == "quest_started" })
+        assertEquals(1, analytics.events.count { it == "quest_completed" })
+        assertEquals(listOf("alice", "alice"), analytics.lifecycleOwners)
+    }
+
+    @Test fun `Instant Plan and detail acceptance each queue a single BQ4 measurement`() = runTest(dispatcher) {
+        val quickQuest = "library-deep-dive"
+        val detailQuest = "botanical-garden"
+        val recommendations = object : RecommendationRepository {
+            override suspend fun recommend(
+                availableMinutes: Int,
+                preferences: UserPreferences,
+                excludedQuestIds: Set<String>,
+                limit: Int,
+            ) = Result.success(listOf(RecommendationResult(quickQuest, 1.0), RecommendationResult(detailQuest, 0.5)))
+        }
+        val vm = signedInOffline(recommendations)
+        vm.refreshRecommendations()
+        advanceUntilIdle()
+        val batch = vm.uiState.value.bq8FreshBatchId
+        assertNotNull(batch)
+
+        vm.smartPickVisible(quickQuest)
+        vm.startInstantPlan(quickQuest)
+        assertEquals(AppScreen.ActiveQuest, vm.uiState.value.screen)
+        val originalAttempt = vm.uiState.value.attemptIdByQuest.getValue(quickQuest)
+        vm.navigate(AppScreen.Explorer)
+        vm.startInstantPlan(quickQuest)
+        assertEquals(originalAttempt, vm.uiState.value.attemptIdByQuest.getValue(quickQuest))
+
+        vm.navigate(AppScreen.Explorer)
+        vm.smartPickVisible(detailQuest)
+        vm.openQuestDetail(detailQuest, fromSmartPicks = true)
+        vm.acceptQuest(detailQuest)
+        advanceUntilIdle()
+
+        val operations = store().read().progressOps.filter { it.type == PendingProgressOp.ACCEPT }
+        assertEquals(listOf(quickQuest, detailQuest), operations.map { it.questId })
+        for ((index, operation) in operations.withIndex()) {
+            assertEquals(listOf("quest_accepted", "recommendation_accepted"), operation.confirmedEvents.map { it.eventType })
+            val metadata = operation.confirmedEvents.last().metadata
+            assertEquals(batch, metadata.getValue("batch_id").jsonPrimitive.content)
+            assertEquals(listOf("instant_plan", "standard")[index], metadata.getValue("start_path").jsonPrimitive.content)
+            assertEquals(index.toString(), metadata.getValue("interactions_to_start").jsonPrimitive.content)
+            assertTrue(metadata.getValue("seconds_to_start").jsonPrimitive.content.toDouble() >= 0.0)
+        }
+        assertFalse(analytics.events.contains("recommendation_accepted"))
+    }
+
+    @Test fun `session social level updates requests while profile and next account keep their defaults`() = runTest(dispatcher) {
+        val requestedLevels = mutableListOf<SocialLevel>()
+        val recommendationSource = object : RecommendationRepository {
+            override suspend fun recommend(
+                availableMinutes: Int, preferences: UserPreferences, excludedQuestIds: Set<String>, limit: Int,
+            ): Result<List<RecommendationResult>> {
+                requestedLevels += preferences.socialLevel
+                return Result.success(emptyList())
+            }
+        }
+        val vm = signedInOffline(recommendationSource)
+        val profileLevel = vm.uiState.value.preferences.socialLevel
+        vm.setSessionSocialLevel(SocialLevel.Group)
+        advanceUntilIdle()
+        assertEquals(SocialLevel.Group, requestedLevels.last())
+        assertEquals(profileLevel, vm.uiState.value.preferences.socialLevel)
+        vm.detachAccount()
+        vm.attachAccount("bob")
+        advanceUntilIdle()
+        assertNull(vm.uiState.value.sessionSocialLevel)
     }
 
     @Test fun `offline acceptance opens the quest and queues it with its confirmation event`() = runTest(dispatcher) {
@@ -152,9 +295,11 @@ class OfflineQuestQueueFlowTest {
 
     private class RecordingAnalytics : AnalyticsRepository {
         val events = mutableListOf<String>()
-        override suspend fun track(sessionId: String, eventType: String, availableMinutes: Int,
+        val lifecycleOwners = mutableListOf<String?>()
+        override suspend fun track(expectedUserId: String?, sessionId: String, eventType: String, availableMinutes: Int,
             preferences: UserPreferences, quest: Quest?, metadata: JsonObject): Result<Unit> {
             events += eventType
+            if (eventType == "quest_started" || eventType == "quest_completed") lifecycleOwners += expectedUserId
             return Result.success(Unit)
         }
     }

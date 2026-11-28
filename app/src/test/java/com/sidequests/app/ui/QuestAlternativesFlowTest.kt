@@ -195,7 +195,7 @@ class QuestAlternativesFlowTest {
     private data class Event(val type: String, val metadata: JsonObject)
     private class RecordingAnalytics : AnalyticsRepository {
         val events = mutableListOf<Event>()
-        override suspend fun track(sessionId: String, eventType: String, availableMinutes: Int,
+        override suspend fun track(expectedUserId: String?, sessionId: String, eventType: String, availableMinutes: Int,
             preferences: UserPreferences, quest: Quest?, metadata: JsonObject): Result<Unit> {
             events += Event(eventType, metadata)
             return Result.success(Unit)

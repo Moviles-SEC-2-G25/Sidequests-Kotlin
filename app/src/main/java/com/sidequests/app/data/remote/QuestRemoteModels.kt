@@ -38,6 +38,8 @@ data class QuestDto(
     val sponsorBusinessCategory: String? = null,
     @SerialName("is_group")
     val isGroup: Boolean = false,
+    val latitude: Double? = null,
+    val longitude: Double? = null,
 )
 
 @Serializable
@@ -64,6 +66,7 @@ fun QuestDto.toDomain(
                 title = step.title,
                 description = step.description,
                 requiresPhoto = step.verificationType in setOf("photo", "photo_and_location"),
+                requiresLocation = step.verificationType in setOf("location", "photo_and_location"),
             )
         }
         .ifEmpty { fallback?.steps.orEmpty() }
@@ -106,5 +109,8 @@ fun QuestDto.toDomain(
         groupMembers = fallback?.groupMembers.orEmpty(),
         steps = mappedSteps,
         tags = tags,
+        locationName = locationName,
+        latitude = latitude,
+        longitude = longitude,
     )
 }

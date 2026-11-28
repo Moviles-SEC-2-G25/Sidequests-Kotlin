@@ -13,6 +13,7 @@ import kotlinx.serialization.json.JsonObject
 
 interface AnalyticsRepository {
     suspend fun track(
+        expectedUserId: String?,
         sessionId: String,
         eventType: String,
         availableMinutes: Int,
@@ -55,6 +56,7 @@ class SupabaseAnalyticsRepository(
 ) : AnalyticsRepository {
 
     override suspend fun track(
+        expectedUserId: String?,
         sessionId: String,
         eventType: String,
         availableMinutes: Int,
@@ -63,8 +65,8 @@ class SupabaseAnalyticsRepository(
         metadata: JsonObject,
     ): Result<Unit> = runCatching {
         withContext(Dispatchers.IO) {
-            val userId = client.auth.currentUserOrNull()?.id
-                ?: error("No authenticated Supabase user is available.")
+            val userId = requireNotNull(expectedUserId) { "No account was attached when the event occurred." }
+            check(client.auth.currentUserOrNull()?.id == userId) { "Analytics account changed before delivery." }
 
             client.from("analytics_events").insert(
                 AnalyticsEventInsertDto(

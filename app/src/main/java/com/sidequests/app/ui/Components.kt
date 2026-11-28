@@ -5,10 +5,13 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -19,19 +22,28 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Icon
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.layout.statusBarsPadding
 import com.sidequests.app.context.DeviceStatus
+import com.sidequests.app.R
 import com.sidequests.app.model.AppScreen
 import com.sidequests.app.model.LocationMode
 import com.sidequests.app.model.Quest
@@ -49,12 +61,15 @@ fun PrimaryButton(
 ) {
     Button(
         onClick = onClick,
-        modifier = modifier.fillMaxWidth().height(56.dp),
+        modifier = modifier.fillMaxWidth().heightIn(min = 52.dp),
         enabled = enabled,
-        shape = RoundedCornerShape(20.dp),
-        colors = ButtonDefaults.buttonColors(containerColor = containerColor),
+        shape = RoundedCornerShape(16.dp),
+        colors = ButtonDefaults.buttonColors(
+            containerColor = containerColor,
+            contentColor = if (containerColor.luminance() > .35f) Color(0xFF1A1830) else Color.White,
+        ),
     ) {
-        Text(text = text, style = MaterialTheme.typography.titleMedium, color = Color.White)
+        Text(text = text, style = MaterialTheme.typography.labelLarge)
     }
 }
 
@@ -68,7 +83,7 @@ fun ChoiceChip(
     emoji: String? = null,
 ) {
     Surface(
-        modifier = modifier.clip(RoundedCornerShape(999.dp)).clickable(onClick = onClick),
+        modifier = modifier.clip(RoundedCornerShape(999.dp)).clickable(role = Role.Button, onClick = onClick),
         color = if (selected) selectedColor else MaterialTheme.colorScheme.surfaceVariant,
         shape = RoundedCornerShape(999.dp),
         border = if (selected) null else androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
@@ -82,7 +97,11 @@ fun ChoiceChip(
             Text(
                 text = text,
                 style = MaterialTheme.typography.labelLarge,
-                color = if (selected) Color.White else MaterialTheme.colorScheme.onSurface,
+                color = when {
+                    selected && selectedColor.luminance() > .35f -> Color(0xFF1A1830)
+                    selected -> Color.White
+                    else -> MaterialTheme.colorScheme.onSurface
+                },
             )
         }
     }
@@ -101,22 +120,26 @@ fun MetaPill(text: String, accent: Color = MaterialTheme.colorScheme.surfaceVari
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun QuestCard(
     quest: Quest,
     onOpen: () -> Unit,
-    onSkip: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
+    onSkip: (() -> Unit)? = null,
     /** Shown when this quest has an open attempt, e.g. "In progress · 2/4". */
     progressLabel: String? = null,
+    onStartNow: (() -> Unit)? = null,
+    startNowEnabled: Boolean = true,
+    completionLabel: String? = null,
 ) {
     Card(
         modifier = modifier.fillMaxWidth().clickable(onClick = onOpen),
-        shape = RoundedCornerShape(24.dp),
+        shape = RoundedCornerShape(20.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
     ) {
-        Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Row(verticalAlignment = Alignment.Top) {
                 Box(
                     modifier = Modifier.size(54.dp).clip(RoundedCornerShape(18.dp)).background(MaterialTheme.colorScheme.surfaceVariant),
@@ -126,7 +149,7 @@ fun QuestCard(
                 }
                 Spacer(Modifier.width(12.dp))
                 Column(modifier = Modifier.weight(1f)) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         if (quest.isNew) MetaPill("NEW", QuestAmber.copy(alpha = .2f))
                         if (quest.isSponsored) MetaPill("SPONSORED", QuestAmber.copy(alpha = .22f))
                         if (quest.isGroup) MetaPill("GROUP", ExplorerIndigo.copy(alpha = .16f))
@@ -149,19 +172,28 @@ fun QuestCard(
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
-            Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+            if (completionLabel != null) {
+                MetaPill(completionLabel, DiscoveryTeal.copy(alpha = .16f))
+            }
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(7.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 MetaPill("⏱ ${quest.duration}")
                 MetaPill("💰 ${quest.budget}")
                 MetaPill(if (quest.location == LocationMode.Gps) "📍 ${quest.distance}" else "🏠 Anywhere")
             }
-            if (onSkip != null) {
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                    Text(
-                        text = "Not for me",
-                        modifier = Modifier.clip(RoundedCornerShape(10.dp)).clickable(onClick = onSkip).padding(6.dp),
-                        style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = .55f),
-                    )
+            if (onSkip != null || onStartNow != null) {
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    if (onSkip != null) {
+                        TextButton(onClick = onSkip) { Text("Not for me") }
+                    }
+                    if (onStartNow != null) {
+                        Button(onClick = onStartNow, enabled = startNowEnabled) {
+                            Text(if (progressLabel == null) "Start now" else "Continue")
+                        }
+                    }
                 }
             }
         }
@@ -171,57 +203,39 @@ fun QuestCard(
 @Composable
 fun BottomBar(
     screen: AppScreen,
-    questAvailable: Boolean,
     onNavigate: (AppScreen) -> Unit,
 ) {
     val active = when (screen) {
-        AppScreen.Explorer, AppScreen.QuestDetail -> AppScreen.Explorer
-        AppScreen.ActiveQuest, AppScreen.GroupQuest -> AppScreen.ActiveQuest
+        AppScreen.Explorer, AppScreen.VarietyDiscovery -> AppScreen.Explorer
+        AppScreen.Nearby -> AppScreen.Nearby
+        AppScreen.Social -> AppScreen.Social
+        AppScreen.ActiveQuest, AppScreen.GroupQuest, AppScreen.QuestHome -> AppScreen.QuestHome
         AppScreen.Profile, AppScreen.OfflinePack -> AppScreen.Profile
         else -> null
     }
     val tabs = listOf(
-        Triple(AppScreen.Explorer, "🧭", "Explore"),
-        Triple(AppScreen.ActiveQuest, "⚡", "Quest"),
-        Triple(AppScreen.Profile, "👤", "Profile"),
+        Triple(AppScreen.Explorer, R.drawable.ic_explore, "Explore"),
+        Triple(AppScreen.Nearby, R.drawable.ic_nearby, "Nearby"),
+        Triple(AppScreen.Social, R.drawable.ic_social, "Social"),
+        Triple(AppScreen.QuestHome, R.drawable.ic_quest, "Quest"),
+        Triple(AppScreen.Profile, R.drawable.ic_profile, "Profile"),
     )
 
-    Surface(
-        color = MaterialTheme.colorScheme.surface,
-        shadowElevation = 8.dp,
-        tonalElevation = 1.dp,
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 10.dp),
-            horizontalArrangement = Arrangement.SpaceAround,
-        ) {
-            tabs.forEach { (target, emoji, label) ->
-                val selected = active == target
-                val enabled = target != AppScreen.ActiveQuest || questAvailable
-                Column(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(14.dp))
-                        .clickable(enabled = enabled) { onNavigate(target) }
-                        .padding(horizontal = 24.dp, vertical = 5.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    Text(emoji, fontSize = 20.sp, color = Color.White.copy(alpha = if (enabled) 1f else .35f))
-                    Text(
-                        label.uppercase(),
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = when {
-                            !enabled -> MaterialTheme.colorScheme.onSurface.copy(alpha = .28f)
-                            selected -> ExplorerIndigo
-                            else -> MaterialTheme.colorScheme.onSurface.copy(alpha = .5f)
-                        },
-                    )
-                    Spacer(Modifier.height(2.dp))
-                    Box(
-                        modifier = Modifier.size(4.dp).clip(CircleShape).background(if (selected) ExplorerIndigo else Color.Transparent)
-                    )
-                }
-            }
+    NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
+        tabs.forEach { (target, icon, label) ->
+            NavigationBarItem(
+                selected = active == target,
+                onClick = { onNavigate(target) },
+                icon = { Icon(painterResource(icon), contentDescription = null) },
+                label = { Text(label, style = MaterialTheme.typography.labelSmall, maxLines = 1) },
+                colors = NavigationBarItemDefaults.colors(
+                    selectedIconColor = MaterialTheme.colorScheme.primary,
+                    selectedTextColor = MaterialTheme.colorScheme.primary,
+                    indicatorColor = MaterialTheme.colorScheme.primaryContainer,
+                    unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                    unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                ),
+            )
         }
     }
 }
@@ -309,9 +323,11 @@ fun DeviceStatusBanner(
         else -> return
     }
 
+    val contentColor = if (!status.isOnline) MaterialTheme.colorScheme.onError else Color(0xFF1A1830)
     Surface(
         modifier = modifier.fillMaxWidth().statusBarsPadding(),
         color = color,
+        contentColor = contentColor,
     ) {
         Row(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
@@ -319,8 +335,8 @@ fun DeviceStatusBanner(
             horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             Column(modifier = Modifier.weight(1f)) {
-                Text(title, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                Text(body, color = Color.White.copy(alpha = .9f), fontSize = 11.sp)
+                Text(title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                Text(body, style = MaterialTheme.typography.bodySmall)
             }
             if (!status.isOnline && onRetry != null) {
                 Text(
@@ -328,9 +344,8 @@ fun DeviceStatusBanner(
                     modifier = Modifier
                         .clip(RoundedCornerShape(12.dp))
                         .clickable(onClick = onRetry)
-                        .background(Color.White.copy(alpha = .2f))
+                        .background(contentColor.copy(alpha = .12f))
                         .padding(horizontal = 12.dp, vertical = 6.dp),
-                    color = Color.White,
                     fontWeight = FontWeight.Bold,
                     fontSize = 12.sp,
                 )
