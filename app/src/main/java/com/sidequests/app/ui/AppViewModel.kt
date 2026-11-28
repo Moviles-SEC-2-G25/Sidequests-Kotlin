@@ -55,6 +55,7 @@ import com.sidequests.app.data.recommendation.RecommendationRepository
 import com.sidequests.app.domain.Bq8RecommendationPresentation
 import com.sidequests.app.data.recommendation.CachedRecommendationRepository
 import com.sidequests.app.data.recommendation.SupabaseRecommendationRepository
+import com.sidequests.app.sensor.camera.QuestPhotoTarget
 import com.sidequests.app.model.AppScreen
 import com.sidequests.app.model.LocationMode
 import com.sidequests.app.data.analytics.Bq11Attempt
@@ -1705,25 +1706,10 @@ class AppViewModel(
         if (localStore != null) {
             val userId = attachedUserId ?: return
             val attemptId = state.attemptIdByQuest[questId] ?: return
-            if (quest.steps.getOrNull(stepIndex)?.requiresPhoto != true) return
+            val step = quest.steps.getOrNull(stepIndex)?.takeIf { it.requiresPhoto } ?: return
+            val target = QuestPhotoTarget(localPath, questId, stepIndex, attemptId, userId, step.remoteStepOrder, quest.category)
             viewModelScope.launch {
-                try {
-                    val saved = photoMutex.withLock { withContext(localIoDispatcher) {
-                        val file = File(localPath)
-                        check(file.isFile && file.length() > 0)
-                        val entry = StoredPhotoProof(UUID.randomUUID().toString(), userId, attemptId, questId,
-                            stepIndex, localPath, java.time.Instant.now().toString(), category = quest.category,
-                            remoteStepOrder = quest.steps[stepIndex].remoteStepOrder)
-                        localStore.update { old -> old.copy(
-                            photos = old.photos + entry,
-                            events = old.events + photoEvent(entry, "photo_proof_captured"),
-                            photoQuests = old.photoQuests + (attemptId to PhotoQuestSnapshot(userId, questId, attemptId, current.currentStep, current.completedSteps)),
-                        ) }
-                    } }
-                    if (attachedUserId == userId) applyStoredPhotos(saved, userId)
-                    scheduleLocalSync(userId)
-                } catch (cancelled: CancellationException) { throw cancelled }
-                  catch (_: Exception) { reportPhotoProofError(stepIndex, "Could not save the captured photo. Please try again.") }
+                if (!storeReturnedPhoto(target)) reportReturnedPhotoError(target, "Could not save the captured photo. Please try again.")
             }
             return
         }
@@ -1762,6 +1748,51 @@ class AppViewModel(
                 photoFile = photoFile,
                 remote = remote,
             )
+        }
+    }
+
+    internal suspend fun storeReturnedPhoto(target: QuestPhotoTarget): Boolean {
+        val store = localStore ?: return false
+        if (attachedUserId != target.ownerId || _uiState.value.accountUserId != target.ownerId) return false
+        val saved = try {
+            photoMutex.withLock {
+                withContext(localIoDispatcher) {
+                    val file = File(target.path)
+                    check(file.isFile && file.length() > 0)
+                    store.update { old ->
+                        if (old.photos.any { it.localPath == target.path && it.userId == target.ownerId &&
+                                it.attemptId == target.attemptId }) return@update old
+                        val attempt = old.photoQuests[target.attemptId]
+                        if (attempt == null || attempt.userId != target.ownerId ||
+                            attempt.questId != target.questId || attempt.closed) return@update old
+                        val entry = StoredPhotoProof(UUID.randomUUID().toString(), target.ownerId, target.attemptId,
+                            target.questId, target.stepIndex, target.path, java.time.Instant.now().toString(),
+                            category = target.category, remoteStepOrder = target.remoteStepOrder)
+                        old.copy(photos = old.photos + entry, events = old.events + photoEvent(entry, "photo_proof_captured"))
+                    }
+                }
+            }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            return false
+        }
+        if (saved.photos.none { it.localPath == target.path && it.userId == target.ownerId &&
+                it.attemptId == target.attemptId }) return false
+        if (attachedUserId == target.ownerId) {
+            applyStoredPhotos(saved, target.ownerId)
+            try { scheduleLocalSync(target.ownerId) }
+            catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) { /* The stored photo remains available for retry. */ }
+        }
+        return true
+    }
+
+    internal fun reportReturnedPhotoError(target: QuestPhotoTarget, message: String) {
+        val state = _uiState.value
+        if (attachedUserId == target.ownerId && state.activeQuestId == target.questId &&
+            state.attemptIdByQuest[target.questId] == target.attemptId) {
+            reportPhotoProofError(target.stepIndex, message)
         }
     }
 

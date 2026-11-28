@@ -11,6 +11,16 @@ data class PendingPhotoCapture(
     val stepIndex: Int,
 )
 
+internal data class QuestPhotoTarget(
+    val path: String,
+    val questId: String,
+    val stepIndex: Int,
+    val attemptId: String,
+    val ownerId: String,
+    val remoteStepOrder: Int?,
+    val category: String,
+)
+
 /**
  * Adapts factory-created evidence files to Android content URIs for a full-resolution capture.
  * The UI only launches the camera and returns the resulting file to the ViewModel.

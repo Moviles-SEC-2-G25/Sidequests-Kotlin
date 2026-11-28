@@ -1,6 +1,7 @@
 package com.sidequests.app.ui
 
 import android.Manifest
+import android.content.ActivityNotFoundException
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -29,8 +30,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
+import androidx.compose.runtime.saveable.listSaver
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
@@ -41,7 +45,10 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.sidequests.app.data.history.HistoryLoad
 import com.sidequests.app.data.history.HistorySource
 import com.sidequests.app.model.AppScreen
+import com.sidequests.app.model.Quest
 import com.sidequests.app.model.SidequestsUiState
+import com.sidequests.app.sensor.camera.CameraPhotoProofService
+import com.sidequests.app.sensor.camera.QuestPhotoTarget
 import com.sidequests.app.ui.auth.AuthScreen
 import com.sidequests.app.ui.auth.AuthStage
 import com.sidequests.app.ui.auth.AuthViewModel
@@ -52,6 +59,7 @@ import com.sidequests.app.ui.auth.rememberBiometricUi
 import com.sidequests.app.ui.auth.MissingSupabaseConfigurationScreen
 import com.sidequests.app.ui.theme.SidequestsTheme
 import kotlinx.coroutines.delay
+import java.io.File
 
 @Composable
 fun SidequestsApp(
@@ -65,6 +73,7 @@ fun SidequestsApp(
     var wasOffline by remember { mutableStateOf(false) }
     var connectionRestored by remember { mutableStateOf(false) }
     var locationPermissionRevision by remember { mutableIntStateOf(0) }
+    val camera = rememberQuestCamera(appViewModel, authState.userId.takeIf { authState.stage == AuthStage.SignedIn }, appState)
 
     LaunchedEffect(deviceStatus.isOnline) {
         if (!deviceStatus.isOnline) {
@@ -163,6 +172,7 @@ fun SidequestsApp(
                             biometric = biometric,
                             biometricEnabled = authState.biometricEnabled,
                             locationPermissionRevision = locationPermissionRevision,
+                            camera = camera,
                             onSignOut = authViewModel::signOut,
                             onRequestLocation = {
                                 locationPermissionLauncher.launch(
@@ -180,6 +190,80 @@ fun SidequestsApp(
     }
 }
 
+private class QuestCamera(val busy: Boolean, val launch: (Quest, Int) -> Unit)
+
+private val questPhotoSaver = listSaver<QuestPhotoTarget?, String>(
+    save = { target ->
+        target?.run { listOf(path, questId, stepIndex.toString(), attemptId, ownerId,
+            remoteStepOrder?.toString().orEmpty(), category) }.orEmpty()
+    },
+    restore = { fields ->
+        QuestPhotoTarget(fields[0], fields[1], fields[2].toInt(), fields[3], fields[4],
+            fields[5].toIntOrNull(), fields[6])
+    },
+)
+
+@Composable
+private fun rememberQuestCamera(viewModel: AppViewModel, signedInOwner: String?, state: SidequestsUiState): QuestCamera {
+    val context = LocalContext.current.applicationContext
+    val service = remember(context) { CameraPhotoProofService(context) }
+    var target by rememberSaveable(stateSaver = questPhotoSaver) { mutableStateOf<QuestPhotoTarget?>(null) }
+    var result by rememberSaveable { mutableStateOf<Boolean?>(null) }
+    // Register outside the auth and quest routes so Android can deliver a result after recreation.
+    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) {
+        if (target != null) result = it
+    }
+    val pending = target
+    val captured = result
+    val readyOwner = signedInOwner?.takeIf { it == state.accountUserId && state.localStateError == null }
+    LaunchedEffect(pending, captured, readyOwner) {
+        if (pending == null || captured == null) return@LaunchedEffect
+        val file = File(pending.path)
+        if (!captured || !file.isFile || file.length() == 0L) {
+            service.discardCapture(file)
+            if (captured && readyOwner == pending.ownerId) {
+                viewModel.reportReturnedPhotoError(pending, "The camera did not produce a usable photo. Please try again.")
+            }
+        } else {
+            if (readyOwner == null) return@LaunchedEffect
+            if (readyOwner == pending.ownerId && !viewModel.storeReturnedPhoto(pending)) {
+                viewModel.reportReturnedPhotoError(pending, "Could not attach the captured photo to this attempt.")
+            }
+            // A successful JPEG is left in private storage if it cannot be attached safely.
+        }
+        target = null
+        result = null
+    }
+    return QuestCamera(target != null, launch@{ quest, index ->
+        if (target != null) return@launch
+        val current = viewModel.uiState.value
+        val owner = current.accountUserId?.takeIf { it == signedInOwner } ?: return@launch
+        val attempt = current.attemptIdByQuest[quest.id] ?: return@launch
+        val step = quest.steps.getOrNull(index)?.takeIf { it.requiresPhoto } ?: return@launch
+        if (current.activeQuestId != quest.id || viewModel.openAttemptProgress(quest.id)?.currentStep != index) return@launch
+        val capture = try {
+            service.createCapture(quest.id, index)
+        } catch (_: Exception) {
+            viewModel.reportPhotoProofError(index, "Photo proof could not be prepared. Please try again.")
+            return@launch
+        }
+        target = QuestPhotoTarget(capture.file.absolutePath, quest.id, index, attempt, owner, step.remoteStepOrder, quest.category)
+        result = null
+        try {
+            launcher.launch(capture.uri)
+        } catch (error: RuntimeException) {
+            target = null
+            result = null
+            service.discardCapture(capture.file)
+            viewModel.reportPhotoProofError(index, when (error) {
+                is ActivityNotFoundException -> "No camera app is available to capture photo proof."
+                is SecurityException -> "Camera access was blocked. Check your device settings and try again."
+                else -> "Could not open the camera. Please try again."
+            })
+        }
+    })
+}
+
 @Composable
 private fun AuthenticatedSidequestsContent(
     state: SidequestsUiState,
@@ -190,6 +274,7 @@ private fun AuthenticatedSidequestsContent(
     biometric: BiometricUi,
     biometricEnabled: Boolean,
     locationPermissionRevision: Int,
+    camera: QuestCamera,
     onSignOut: () -> Unit,
     onRequestLocation: () -> Unit,
 ) {
@@ -202,7 +287,7 @@ private fun AuthenticatedSidequestsContent(
     val attemptId = state.attemptIdByQuest[quest.id]
     val openProgress = viewModel.openAttemptProgress(quest.id)?.takeUnless { it.paused }
     val walking = rememberQuestWalking(account, attemptId, openProgress != null)
-    if (attemptId != null && openProgress != null) {
+    if (attemptId != null && openProgress != null && !camera.busy) {
         QuestCheckIn(account, attemptId, quest, openProgress, locationPermissionRevision,
             deviceStatus.isLowBattery, viewModel)
     }
@@ -323,6 +408,8 @@ private fun AuthenticatedSidequestsContent(
                         viewModel = viewModel,
                         walking = walking,
                         onRequestLocation = onRequestLocation,
+                        cameraBusy = camera.busy,
+                        onCapturePhoto = camera.launch,
                     )
 
                     AppScreen.ExitFlow -> ExitFlowScreen(

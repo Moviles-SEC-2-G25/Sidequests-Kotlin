@@ -77,11 +77,21 @@ fun rememberBiometricUi(viewModel: AuthViewModel): BiometricUi {
         }
     }
     DisposableEffect(prompt) {
-        onDispose { if (owner != null) prompt?.cancelAuthentication() }
+        onDispose {
+            if (owner != null) {
+                owner = null
+                runCatching { prompt?.cancelAuthentication() }
+            }
+        }
     }
 
     return BiometricUi(available, owner != null, error) start@{ user, enable ->
-        if (owner != null || prompt == null) return@start
+        if (owner != null || prompt == null || activity == null) return@start
+        if (activity.isFinishing || activity.isDestroyed || activity.supportFragmentManager.isStateSaved ||
+            !activity.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
+            error = "Biometric authentication could not start. Return to Sidequests and try again."
+            return@start
+        }
         available = available()
         error = null
         if (!available) {
@@ -90,11 +100,17 @@ fun rememberBiometricUi(viewModel: AuthViewModel): BiometricUi {
         }
         owner = user
         enabling = enable
-        prompt.authenticate(BiometricPrompt.PromptInfo.Builder()
-            .setTitle(if (enable) "Enable biometric unlock" else "Unlock Sidequests")
-            .setAllowedAuthenticators(authenticator)
-            .setNegativeButtonText("Cancel")
-            .build())
+        try {
+            prompt.authenticate(BiometricPrompt.PromptInfo.Builder()
+                .setTitle(if (enable) "Enable biometric unlock" else "Unlock Sidequests")
+                .setAllowedAuthenticators(authenticator)
+                .setNegativeButtonText("Cancel")
+                .build())
+        } catch (_: RuntimeException) {
+            owner = null
+            enabling = false
+            error = "Biometric authentication could not start. Please try again."
+        }
     }
 }
 

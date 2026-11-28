@@ -1,8 +1,5 @@
 package com.sidequests.app.ui
 
-import android.content.ActivityNotFoundException
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -67,7 +64,6 @@ import com.sidequests.app.model.QuestDifficulty
 import com.sidequests.app.model.QuestProgress
 import com.sidequests.app.model.SidequestsUiState
 import com.sidequests.app.model.SocialLevel
-import com.sidequests.app.sensor.camera.CameraPhotoProofService
 import com.sidequests.app.ui.theme.DiscoveryTeal
 import com.sidequests.app.ui.theme.ExplorerIndigo
 import com.sidequests.app.ui.theme.QuestAmber
@@ -84,7 +80,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import com.sidequests.app.ui.auth.PasswordChangeState
 import com.sidequests.app.ui.auth.BiometricUi
-import java.io.File
 
 @Composable
 fun QuestDetailScreen(
@@ -251,42 +246,9 @@ fun ActiveQuestScreen(
     modifier: Modifier = Modifier,
     walking: QuestWalkingUi? = null,
     onRequestLocation: () -> Unit = {},
+    cameraBusy: Boolean,
+    onCapturePhoto: (Quest, Int) -> Unit,
 ) {
-    val context = LocalContext.current
-    val cameraService = remember(context) {
-        CameraPhotoProofService(context.applicationContext)
-    }
-    var pendingPhotoPath by rememberSaveable { mutableStateOf<String?>(null) }
-    var pendingPhotoStep by rememberSaveable { mutableIntStateOf(-1) }
-    var pendingAttemptId by rememberSaveable { mutableStateOf<String?>(null) }
-    var pendingOwnerId by rememberSaveable { mutableStateOf<String?>(null) }
-    fun clearPendingCapture() {
-        pendingPhotoPath = null
-        pendingPhotoStep = -1
-        pendingAttemptId = null
-        pendingOwnerId = null
-    }
-    val photoLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { captured ->
-        val file = pendingPhotoPath?.let(::File)
-        val stepIndex = pendingPhotoStep
-        val attemptId = pendingAttemptId
-        val ownerId = pendingOwnerId
-        clearPendingCapture()
-
-        if (captured && file != null && file.length() > 0 && stepIndex >= 0) {
-            if (attemptId != null && ownerId != null) {
-                viewModel.markPhotoProofCaptured(stepIndex, file.absolutePath, attemptId, ownerId)
-            } else cameraService.discardCapture(file)
-        } else {
-            if (file != null) cameraService.discardCapture(file)
-            if (captured && stepIndex >= 0) {
-                viewModel.reportPhotoProofError(
-                    stepIndex,
-                    "The camera did not produce a usable photo. Please try again.",
-                )
-            }
-        }
-    }
     val allDone = progress.completedSteps.size >= quest.steps.size
     val deviceStatus by viewModel.deviceStatus.collectAsStateWithLifecycle()
     val appState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -403,27 +365,8 @@ fun ActiveQuestScreen(
                         val isUploaded = index in progress.uploadedPhotoProofByStep
                         Spacer(Modifier.height(12.dp))
                         Surface(
-                            modifier = Modifier.fillMaxWidth().clickable(enabled = !isUploading) {
-                                runCatching { cameraService.createCapture(quest.id, index) }
-                                    .onSuccess { capture ->
-                                        pendingPhotoPath = capture.file.absolutePath
-                                        pendingPhotoStep = capture.stepIndex
-                                        pendingAttemptId = viewModel.uiState.value.attemptIdByQuest[quest.id]
-                                        pendingOwnerId = viewModel.uiState.value.accountUserId
-                                        try {
-                                            photoLauncher.launch(capture.uri)
-                                        } catch (_: ActivityNotFoundException) {
-                                            clearPendingCapture()
-                                            cameraService.discardCapture(capture.file)
-                                            viewModel.reportPhotoProofError(index, "No camera app is available to capture photo proof.")
-                                        }
-                                    }
-                                    .onFailure {
-                                        viewModel.reportPhotoProofError(
-                                            index,
-                                            "Photo proof could not be prepared. Please try again."
-                                        )
-                                    }
+                            modifier = Modifier.fillMaxWidth().clickable(enabled = !isUploading && !cameraBusy) {
+                                onCapturePhoto(quest, index)
                             },
                             shape = RoundedCornerShape(16.dp),
                             color = if (hasPhotoProof) DiscoveryTeal.copy(alpha = .16f) else MaterialTheme.colorScheme.surfaceVariant,

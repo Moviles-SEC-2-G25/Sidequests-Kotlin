@@ -47,6 +47,7 @@ data class QuestWalkingUi(
     val steps: StateFlow<Int?>,
     val sensorAvailable: Boolean,
     val permissionGranted: Boolean,
+    val registrationUnavailable: Boolean,
     val isOpen: Boolean,
     val requestPermission: () -> Unit,
 )
@@ -60,15 +61,20 @@ fun rememberQuestWalking(userId: String, attemptId: String?, isOpen: Boolean): Q
     val store = remember(context) { WalkingTotalsStore(context) }
     val steps = remember(userId, attemptId) { MutableStateFlow<Int?>(null) }
     var granted by remember(context) { mutableStateOf(hasActivityPermission(context)) }
+    var registrationUnavailable by remember(userId, attemptId) { mutableStateOf(false) }
     val requestPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
         granted = hasActivityPermission(context)
+        registrationUnavailable = false
     }
-    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { granted = hasActivityPermission(context) }
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
+        granted = hasActivityPermission(context)
+        registrationUnavailable = false
+    }
 
-    LaunchedEffect(owner, userId, attemptId, isOpen, granted) {
+    LaunchedEffect(owner, userId, attemptId, isOpen, granted, registrationUnavailable) {
         if (attemptId == null) return@LaunchedEffect
         if (steps.value == null) steps.value = store.read(userId)[attemptId]
-        if (!isOpen || !granted || manager == null || sensor == null) return@LaunchedEffect
+        if (!isOpen || !granted || registrationUnavailable || manager == null || sensor == null) return@LaunchedEffect
         owner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
             val segment = WalkingSegment()
             var pending = 0
@@ -84,7 +90,10 @@ fun rememberQuestWalking(userId: String, attemptId: String?, isOpen: Boolean): Q
             }
 
             try {
-                stepSamples(manager, sensor).collect { cumulative ->
+                stepSamples(manager, sensor) {
+                    granted = hasActivityPermission(context)
+                    registrationUnavailable = granted
+                }.collect { cumulative ->
                     val delta = segment.observe(cumulative)
                     val total = ((steps.value ?: 0).toLong() + delta).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
                     steps.value = total
@@ -102,6 +111,7 @@ fun rememberQuestWalking(userId: String, attemptId: String?, isOpen: Boolean): Q
         steps = steps,
         sensorAvailable = sensor != null,
         permissionGranted = granted,
+        registrationUnavailable = registrationUnavailable,
         isOpen = isOpen,
         requestPermission = {
             if (Build.VERSION.SDK_INT >= 29) requestPermission.launch(Manifest.permission.ACTIVITY_RECOGNITION)
@@ -124,6 +134,7 @@ fun QuestWalkingCard(walking: QuestWalkingUi) {
                     Text("Allow physical activity access to count steps during this quest.")
                     TextButton(onClick = walking.requestPermission) { Text("Allow access") }
                 }
+                walking.registrationUnavailable -> Text("The step counter is temporarily unavailable.")
                 steps == null -> Text("Waiting for the step counter…")
             }
         }
@@ -133,13 +144,25 @@ fun QuestWalkingCard(walking: QuestWalkingUi) {
 private fun hasActivityPermission(context: Context) = Build.VERSION.SDK_INT < 29 ||
     ContextCompat.checkSelfPermission(context, Manifest.permission.ACTIVITY_RECOGNITION) == PackageManager.PERMISSION_GRANTED
 
-private fun stepSamples(manager: SensorManager, sensor: Sensor) = callbackFlow {
+private fun stepSamples(manager: SensorManager, sensor: Sensor, onRegistrationFailure: () -> Unit) = callbackFlow {
     val listener = object : SensorEventListener {
         override fun onSensorChanged(event: SensorEvent) {
             event.values.firstOrNull()?.takeIf { it.isFinite() && it >= 0 }?.let { trySend(it.toInt()) }
         }
         override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
     }
-    if (!manager.registerListener(listener, sensor, SensorManager.SENSOR_DELAY_NORMAL)) close()
-    awaitClose { manager.unregisterListener(listener) }
+    val registered = try {
+        manager.registerListener(listener, sensor, SensorManager.SENSOR_DELAY_NORMAL)
+    } catch (_: SecurityException) {
+        false
+    }
+    if (!registered) {
+        close()
+        onRegistrationFailure()
+        return@callbackFlow
+    }
+    awaitClose {
+        try { manager.unregisterListener(listener) }
+        catch (_: SecurityException) { /* Access was revoked while stopping the counter. */ }
+    }
 }.conflate()
