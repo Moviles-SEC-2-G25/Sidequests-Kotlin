@@ -2,6 +2,8 @@ package com.sidequests.app.data.photo
 
 import com.sidequests.app.data.local.LexLocalStore
 import com.sidequests.app.data.local.StoredPhotoProof
+import com.sidequests.app.data.remote.QuestStepDto
+import com.sidequests.app.model.QuestStep
 import java.io.File
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -10,6 +12,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
@@ -39,6 +42,31 @@ class PhotoProofSyncEngineTest {
         assertEquals(listOf("proof"), delivered)
         assertEquals("uploaded", store().read().photos.single().status)
         assertEquals(2, store().read().photos.single().attempts)
+    }
+
+    @Test fun `legacy queued photo uses remote order five while evidence stays at index one`() = runTest {
+        val photo = entry()
+        store().update { it.copy(photos = listOf(photo)) }
+        val remoteSteps = listOf(
+            QuestStepDto(2, "quest", 5, "Photo", "", "photo_and_location"),
+            QuestStepDto(1, "quest", 0, "Start", "", "none"),
+        )
+        assertFalse(PhotoProofSyncEngine(store(), { "alice" }) { queued ->
+            assertNull(queued.remoteStepOrder)
+            val order = photoStepOrder(remoteSteps, queued.stepIndex)
+            Result.success(PhotoProofUpload("alice/attempt/quest/step-${order + 1}-${queued.id}.jpg", 3, order))
+        }.drain("alice"))
+        val saved = store().read()
+        assertEquals(1, saved.photos.single().stepIndex)
+        assertEquals(5, saved.photos.single().remoteStepOrder)
+        assertEquals("1", saved.events.single().metadata.getValue("step_index").jsonPrimitive.content)
+        assertEquals("5", saved.events.single().metadata.getValue("step_order").jsonPrimitive.content)
+        val rows = listOf(RemoteEvidence(5, requireNotNull(saved.photos.single().storagePath)))
+        val steps = listOf(QuestStep("Start", "", remoteStepOrder = 0), QuestStep("Photo", "", remoteStepOrder = 5))
+        assertEquals(1, mergeEvidence(emptyList(), rows, steps) { null }.single().stepIndex)
+        val reconciled = mergeEvidence(listOf(photo), rows, steps) { File(it) }.single()
+        assertEquals(1, reconciled.stepIndex)
+        assertTrue(reconciled.uploaded)
     }
 
     @Test fun `another signed in account never uploads the owners files`() = runTest {

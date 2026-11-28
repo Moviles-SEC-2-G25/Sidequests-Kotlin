@@ -7,6 +7,7 @@ import com.sidequests.app.data.InMemorySidequestsRepository
 import com.sidequests.app.data.local.LexLocalStore
 import com.sidequests.app.model.AppScreen
 import com.sidequests.app.model.AbandonmentReason
+import com.sidequests.app.sensor.camera.QuestPhotoTarget
 import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -118,6 +119,49 @@ class Sprint3LocalFlowTest {
         assertEquals(photoStep, restored.activeProgress().currentStep)
         assertEquals("botanical-garden", restored.uiState.value.activeQuestId)
         assertTrue(restored.hasActiveQuest())
+    }
+
+    @Test fun `recovered camera result is scoped to the original attempt and stored only once`() = runTest {
+        val initial = vm()
+        initial.attachAccount("alice")
+        scheduled.receive()
+        initial.skipOnboarding()
+        scheduled.receive()
+        initial.acceptQuest("botanical-garden")
+        advanceUntilIdle()
+        val quest = initial.activeQuest()
+        val step = quest.steps.indexOfFirst { it.requiresPhoto }
+        val attempt = initial.uiState.value.attemptIdByQuest.getValue(quest.id)
+        initial.saveAndExit(attempt)
+        advanceUntilIdle()
+        val snapshot = store().read().photoQuests.getValue(attempt)
+        val file = folder.newFile("external-camera.jpg").apply { writeBytes(byteArrayOf(1, 2, 3)) }
+        val target = QuestPhotoTarget(file.absolutePath, quest.id, step, attempt, "alice", 5, quest.category)
+
+        models.clear()
+        val restored = vm()
+        assertFalse(restored.storeReturnedPhoto(target))
+        restored.attachAccount("bob")
+        advanceUntilIdle()
+        assertFalse(restored.storeReturnedPhoto(target))
+        assertTrue(store().read().photos.isEmpty())
+        restored.attachAccount("alice")
+        advanceUntilIdle()
+        assertFalse(restored.storeReturnedPhoto(target.copy(attemptId = "stale-attempt")))
+        assertTrue(restored.storeReturnedPhoto(target))
+        assertTrue(restored.storeReturnedPhoto(target))
+        assertEquals(snapshot, store().read().photoQuests.getValue(attempt))
+        assertTrue(snapshot.paused)
+        assertEquals(5, store().read().photos.single().remoteStepOrder)
+        assertEquals(1, store().read().events.count { it.eventType == "photo_proof_captured" })
+
+        restored.startAnotherQuest(AbandonmentReason.RanOutOfTime)
+        advanceUntilIdle()
+        val late = folder.newFile("late-camera.jpg").apply { writeBytes(byteArrayOf(4, 5, 6)) }
+        assertFalse(restored.storeReturnedPhoto(target.copy(path = late.absolutePath)))
+        assertTrue(store().read().photoQuests.getValue(attempt).closed)
+        assertEquals(1, store().read().photos.size)
+        assertTrue(file.isFile)
     }
 
     @Test fun `switching accounts hides the previous owners proof and active attempt`() = runTest {

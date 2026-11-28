@@ -2,6 +2,7 @@ package com.sidequests.app.data.photo
 
 import com.sidequests.app.data.local.LexLocalStore
 import com.sidequests.app.data.local.StoredPhotoProof
+import com.sidequests.app.model.QuestStep
 import io.github.jan.supabase.SupabaseClient
 import io.github.jan.supabase.auth.auth
 import io.github.jan.supabase.postgrest.from
@@ -53,14 +54,14 @@ class AttemptEvidenceRepository(
 ) {
     val changes get() = store.changes
 
-    internal suspend fun read(userId: String, attemptId: String): AttemptEvidence = withContext(Dispatchers.IO) {
+    internal suspend fun read(userId: String, attemptId: String, steps: List<QuestStep> = emptyList()): AttemptEvidence = withContext(Dispatchers.IO) {
         val state = store.read()
         val index = state.evidenceIndexes[attemptId]?.takeIf { it.userId == userId }
         val root = photoDirectory.canonicalFile.toPath()
         val local = state.photos.filter { it.userId == userId && it.attemptId == attemptId }
         val remote = index?.rows.orEmpty().filter { isOwnedPath(it.storagePath, userId, attemptId) }
         AttemptEvidence(
-            mergeEvidence(local, remote) { path ->
+            mergeEvidence(local, remote, steps) { path ->
                 runCatching { File(path).canonicalFile }.getOrNull()?.takeIf {
                     it.toPath().startsWith(root) && it.isFile && it.length() > 0
                 }
@@ -119,6 +120,7 @@ private fun isOwnedPath(path: String, userId: String, attemptId: String): Boolea
 internal fun mergeEvidence(
     local: List<StoredPhotoProof>,
     remote: List<RemoteEvidence>,
+    steps: List<QuestStep> = emptyList(),
     localFile: (String) -> File?,
 ): List<EvidencePhoto> {
     val remoteByPath = remote.associateBy { it.storagePath }
@@ -126,7 +128,8 @@ internal fun mergeEvidence(
     val photos = local.map { proof ->
         // Reconcile a server upload whose confirmation did not reach the local outbox.
         val matching = remoteByPath[proof.storagePath] ?: remote.firstOrNull {
-            it.stepIndex == proof.stepIndex && it.storagePath.endsWith("-${proof.id}.jpg")
+            it.storagePath.endsWith("-${proof.id}.jpg") &&
+                (proof.remoteStepOrder == null || it.stepIndex == proof.remoteStepOrder)
         }
         val path = matching?.storagePath ?: proof.storagePath?.takeIf {
             isOwnedPath(it, proof.userId, proof.attemptId)
@@ -142,9 +145,10 @@ internal fun mergeEvidence(
             uploadedAt = matching?.uploadedAt,
         )
     }
+    val indexesByOrder = steps.mapIndexed { index, step -> (step.remoteStepOrder ?: index) to index }.toMap()
     val remaining = remoteByPath.values.filterNot { it.storagePath in matchedPaths }.map {
         EvidencePhoto(
-            "remote:${it.storagePath}", it.stepIndex, null, it.storagePath,
+            "remote:${it.storagePath}", indexesByOrder[it.stepIndex] ?: it.stepIndex, null, it.storagePath,
             uploaded = true, uploadedAt = it.uploadedAt,
         )
     }

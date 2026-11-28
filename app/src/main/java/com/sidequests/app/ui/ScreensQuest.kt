@@ -1,7 +1,5 @@
 package com.sidequests.app.ui
 
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -66,13 +64,12 @@ import com.sidequests.app.model.QuestDifficulty
 import com.sidequests.app.model.QuestProgress
 import com.sidequests.app.model.SidequestsUiState
 import com.sidequests.app.model.SocialLevel
-import com.sidequests.app.sensor.camera.CameraPhotoProofService
 import com.sidequests.app.ui.theme.DiscoveryTeal
 import com.sidequests.app.ui.theme.ExplorerIndigo
 import com.sidequests.app.ui.theme.QuestAmber
 import com.sidequests.app.domain.SmartDifficultyAdvisor
 import com.sidequests.app.domain.QuestStatistics
-import com.sidequests.app.domain.similarQuests
+import com.sidequests.app.domain.completionSuggestions
 import com.sidequests.app.domain.hasDestination
 import com.sidequests.app.BuildConfig
 import com.sidequests.app.telemetry.AppModule
@@ -83,7 +80,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import com.sidequests.app.ui.auth.PasswordChangeState
 import com.sidequests.app.ui.auth.BiometricUi
-import java.io.File
 
 @Composable
 fun QuestDetailScreen(
@@ -250,39 +246,9 @@ fun ActiveQuestScreen(
     modifier: Modifier = Modifier,
     walking: QuestWalkingUi? = null,
     onRequestLocation: () -> Unit = {},
+    cameraBusy: Boolean,
+    onCapturePhoto: (Quest, Int) -> Unit,
 ) {
-    val context = LocalContext.current
-    val cameraService = remember(context) {
-        CameraPhotoProofService(context.applicationContext)
-    }
-    var pendingPhotoPath by rememberSaveable { mutableStateOf<String?>(null) }
-    var pendingPhotoStep by rememberSaveable { mutableIntStateOf(-1) }
-    var pendingAttemptId by rememberSaveable { mutableStateOf<String?>(null) }
-    var pendingOwnerId by rememberSaveable { mutableStateOf<String?>(null) }
-    val photoLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { captured ->
-        val file = pendingPhotoPath?.let(::File)
-        val stepIndex = pendingPhotoStep
-        val attemptId = pendingAttemptId
-        val ownerId = pendingOwnerId
-        pendingPhotoPath = null
-        pendingPhotoStep = -1
-        pendingAttemptId = null
-        pendingOwnerId = null
-
-        if (captured && file != null && file.length() > 0 && stepIndex >= 0) {
-            if (attemptId != null && ownerId != null) {
-                viewModel.markPhotoProofCaptured(stepIndex, file.absolutePath, attemptId, ownerId)
-            } else cameraService.discardCapture(file)
-        } else {
-            if (file != null) cameraService.discardCapture(file)
-            if (captured && stepIndex >= 0) {
-                viewModel.reportPhotoProofError(
-                    stepIndex,
-                    "The camera did not produce a usable photo. Please try again.",
-                )
-            }
-        }
-    }
     val allDone = progress.completedSteps.size >= quest.steps.size
     val deviceStatus by viewModel.deviceStatus.collectAsStateWithLifecycle()
     val appState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -399,21 +365,8 @@ fun ActiveQuestScreen(
                         val isUploaded = index in progress.uploadedPhotoProofByStep
                         Spacer(Modifier.height(12.dp))
                         Surface(
-                            modifier = Modifier.fillMaxWidth().clickable(enabled = !isUploading) {
-                                runCatching { cameraService.createCapture(quest.id, index) }
-                                    .onSuccess { capture ->
-                                        pendingPhotoPath = capture.file.absolutePath
-                                        pendingPhotoStep = capture.stepIndex
-                                        pendingAttemptId = viewModel.uiState.value.attemptIdByQuest[quest.id]
-                                        pendingOwnerId = viewModel.uiState.value.accountUserId
-                                        photoLauncher.launch(capture.uri)
-                                    }
-                                    .onFailure {
-                                        viewModel.reportPhotoProofError(
-                                            index,
-                                            "Photo proof could not be prepared. Please try again."
-                                        )
-                                    }
+                            modifier = Modifier.fillMaxWidth().clickable(enabled = !isUploading && !cameraBusy) {
+                                onCapturePhoto(quest, index)
                             },
                             shape = RoundedCornerShape(16.dp),
                             color = if (hasPhotoProof) DiscoveryTeal.copy(alpha = .16f) else MaterialTheme.colorScheme.surfaceVariant,
@@ -510,6 +463,7 @@ fun ExitFlowScreen(
     quest: Quest,
     progress: QuestProgress,
     viewModel: AppViewModel,
+    attemptId: String?,
     modifier: Modifier = Modifier,
 ) {
     var selectedReason by remember { mutableStateOf<AbandonmentReason?>(null) }
@@ -550,7 +504,7 @@ fun ExitFlowScreen(
             }
         }
         Spacer(Modifier.height(24.dp))
-        PrimaryButton("Save progress & exit", viewModel::saveAndExit)
+        PrimaryButton("Save progress & exit", { viewModel.saveAndExit(attemptId) })
         Spacer(Modifier.height(8.dp))
         PrimaryButton("Keep going", { viewModel.navigate(AppScreen.ActiveQuest) }, containerColor = DiscoveryTeal)
         Spacer(Modifier.height(8.dp))
@@ -580,7 +534,7 @@ fun RatingScreen(
     quest: Quest,
     viewModel: AppViewModel,
     state: SidequestsUiState,
-    historicalUnavailableIds: Set<String>,
+    history: QuestStatistics?,
     modifier: Modifier = Modifier,
 ) {
     var stars by rememberSaveable { mutableIntStateOf(0) }
@@ -589,16 +543,10 @@ fun RatingScreen(
     ) { mutableStateOf(emptySet()) }
     val tags = listOf("Worth it", "Would do again", "Felt proud", "Relaxing", "Surprising", "A bit tough")
     val catalog = viewModel.allQuests()
-    val unavailable = remember(catalog, historicalUnavailableIds, state.progressByQuest, state.attemptIdByQuest) {
-        historicalUnavailableIds + catalog.filter { candidate ->
-            val progress = state.progressByQuest[candidate.id]
-            progress?.abandoned != true && (candidate.id in state.attemptIdByQuest ||
-                (candidate.steps.isNotEmpty() && (progress?.completedSteps?.size ?: 0) >= candidate.steps.size))
-        }.map { it.id }
-    }
-    val suggestions by produceState(emptyList<Quest>(), quest, catalog, unavailable, stars, state.availableTime) {
+    val suggestions by produceState(emptyList<Quest>(), quest, catalog, history, stars, state.availableTime,
+        state.attemptIdByQuest, state.progressByQuest, state.abandonedAttemptIds) {
         value = withContext(Dispatchers.Default) {
-            similarQuests(quest, catalog, unavailable, stars, state.availableTime)
+            completionSuggestions(quest, catalog, state, history, stars)
         }
     }
 
@@ -662,8 +610,10 @@ fun RatingScreen(
             }
         }
         Spacer(Modifier.height(24.dp))
-        PrimaryButton("Save rating", { viewModel.submitRating(stars, selectedTags) }, enabled = stars > 0)
-        TextButton(onClick = viewModel::skipRating) { Text("Skip") }
+        state.progressSyncError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+        PrimaryButton(if (state.ratingSaving) "Saving rating…" else "Save rating",
+            { viewModel.submitRating(stars, selectedTags) }, enabled = stars > 0 && !state.ratingSaving)
+        TextButton(onClick = viewModel::skipRating, enabled = !state.ratingSaving) { Text("Skip") }
     }
 }
 

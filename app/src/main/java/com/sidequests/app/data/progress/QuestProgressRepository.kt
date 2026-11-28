@@ -129,6 +129,7 @@ class SupabaseQuestProgressRepository(
             }) {
                 filter {
                     eq("id", attemptId)
+                    isIn("status", listOf("accepted", "in_progress"))
                 }
             }
         }
@@ -209,7 +210,10 @@ class SupabaseQuestProgressRepository(
                             set("abandoned_at", op.occurredAt)
                         }
                     }) {
-                        filter { eq("id", op.attemptId) }
+                        filter {
+                            eq("id", op.attemptId)
+                            if (op.type == PendingProgressOp.SAVE) isIn("status", listOf("accepted", "in_progress"))
+                        }
                     }
                 }
                 PendingProgressOp.RATE -> client.from("user_quests").update({

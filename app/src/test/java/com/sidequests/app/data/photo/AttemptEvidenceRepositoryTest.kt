@@ -54,7 +54,7 @@ class AttemptEvidenceRepositoryTest {
         val proof = StoredPhotoProof("proof", "owner", "attempt", "quest", 0, "/photo.jpg", "now")
         val row = RemoteEvidence(0, "owner/attempt/quest/step-1-proof.jpg")
         val retake = RemoteEvidence(0, "owner/attempt/quest/step-1-another.jpg")
-        val photos = mergeEvidence(listOf(proof), listOf(row, retake, row), ::File)
+        val photos = mergeEvidence(listOf(proof), listOf(row, retake, row), localFile = ::File)
         assertEquals(2, photos.size)
         assertEquals("proof", photos.first().id)
         assertEquals(row.storagePath, photos.first().storagePath)

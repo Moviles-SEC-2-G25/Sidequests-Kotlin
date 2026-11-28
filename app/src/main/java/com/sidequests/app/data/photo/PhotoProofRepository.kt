@@ -1,5 +1,6 @@
 package com.sidequests.app.data.photo
 
+import com.sidequests.app.data.remote.QuestStepDto
 import io.github.jan.supabase.SupabaseClient
 import io.github.jan.supabase.auth.auth
 import io.github.jan.supabase.postgrest.from
@@ -16,7 +17,14 @@ import kotlinx.serialization.Serializable
 data class PhotoProofUpload(
     val storagePath: String,
     val byteCount: Long,
+    val remoteStepOrder: Int? = null,
 )
+
+internal fun photoStepOrder(steps: List<QuestStepDto>, stepIndex: Int): Int =
+    requireNotNull(steps.sortedBy { it.stepOrder }.getOrNull(stepIndex)
+        ?.takeIf { it.verificationType in setOf("photo", "photo_and_location") }?.stepOrder) {
+        "No photo verification is defined at this position in the quest."
+    }
 
 @Serializable
 private data class PhotoProofInsertDto(
@@ -36,6 +44,7 @@ interface PhotoProofRepository {
         photoFile: File,
         proofId: String = UUID.randomUUID().toString(),
         expectedUserId: String? = null,
+        remoteStepOrder: Int? = null,
     ): Result<PhotoProofUpload>
 }
 
@@ -50,6 +59,7 @@ class SupabasePhotoProofRepository(
         photoFile: File,
         proofId: String,
         expectedUserId: String?,
+        remoteStepOrder: Int?,
     ): Result<PhotoProofUpload> = runCatching {
         withContext(Dispatchers.IO) {
             check(photoFile.isFile && photoFile.length() > 0) {
@@ -61,19 +71,22 @@ class SupabasePhotoProofRepository(
                 ?: error("No authenticated Supabase user is available.")
             check(expectedUserId == null || expectedUserId == userId) { "Sign in to the account that captured this photo." }
             val safeQuestId = safePathSegment(questId)
-            val storagePath = listOf(
-                userId,
-                attemptId,
-                safeQuestId,
-                "step-${stepIndex + 1}-$proofId.jpg",
-            ).joinToString("/")
-
-            val bucket = client.storage.from(bucketName)
-            suspend fun isRegistered(): Boolean = client.from("quest_photo_proofs").select {
-                filter { eq("storage_path", storagePath); eq("attempt_id", attemptId); eq("step_order", stepIndex) }
+            fun pathFor(order: Int) = "$userId/$attemptId/$safeQuestId/step-${order + 1}-$proofId.jpg"
+            suspend fun isRegistered(order: Int): Boolean = client.from("quest_photo_proofs").select {
+                filter { eq("storage_path", pathFor(order)); eq("attempt_id", attemptId); eq("step_order", order) }
             }.decodeList<ExistingPhotoProof>().isNotEmpty()
 
-            if (isRegistered()) return@withContext PhotoProofUpload(storagePath, photoFile.length())
+            // Preserve an older upload if its registration succeeded but the acknowledgement was lost.
+            if (remoteStepOrder == null && isRegistered(stepIndex)) {
+                return@withContext PhotoProofUpload(pathFor(stepIndex), photoFile.length(), stepIndex)
+            }
+            val order = remoteStepOrder ?: photoStepOrder(client.from("quest_steps").select {
+                filter { eq("quest_id", questId) }
+            }.decodeList<QuestStepDto>(), stepIndex)
+            check(client.auth.currentUserOrNull()?.id == userId)
+            val storagePath = pathFor(order)
+            val bucket = client.storage.from(bucketName)
+            if (isRegistered(order)) return@withContext PhotoProofUpload(storagePath, photoFile.length(), order)
             val bytes = photoFile.readBytes()
             try {
                 bucket.upload(storagePath, bytes) {
@@ -94,19 +107,20 @@ class SupabasePhotoProofRepository(
                 client.from("quest_photo_proofs").insert(
                     PhotoProofInsertDto(
                         attemptId = attemptId,
-                        stepOrder = stepIndex,
+                        stepOrder = order,
                         storagePath = storagePath,
                     )
                 )
             } catch (registrationError: Exception) {
                 if (registrationError is CancellationException) throw registrationError
                 // Keep the same object for retry. A lost insert acknowledgement is also safe.
-                if (!isRegistered()) throw registrationError
+                if (!isRegistered(order)) throw registrationError
             }
 
             PhotoProofUpload(
                 storagePath = storagePath,
                 byteCount = photoFile.length(),
+                remoteStepOrder = order,
             )
         }
     }

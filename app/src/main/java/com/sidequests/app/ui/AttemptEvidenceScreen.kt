@@ -107,10 +107,10 @@ internal fun AttemptEvidenceScreen(
     val userId = entry.attempt.userId
     val attemptId = entry.attempt.id
     var reload by remember { mutableStateOf(0) }
-    val saved by produceState<Result<AttemptEvidence>?>(null, repository, reload) {
+    val saved by produceState<Result<AttemptEvidence>?>(null, repository, userId, attemptId, steps, reload) {
         repository.changes.collectLatest {
             value = try {
-                Result.success(repository.read(userId, attemptId))
+                Result.success(repository.read(userId, attemptId, steps))
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Exception) {
@@ -120,7 +120,7 @@ internal fun AttemptEvidenceScreen(
     }
     var refreshing by remember(online, reload) { mutableStateOf(online) }
     var refreshFailed by remember(online, reload) { mutableStateOf(false) }
-    LaunchedEffect(repository, online, reload) {
+    LaunchedEffect(repository, userId, attemptId, online, reload) {
         if (!online) return@LaunchedEffect
         try {
             repository.refresh(userId, attemptId)
