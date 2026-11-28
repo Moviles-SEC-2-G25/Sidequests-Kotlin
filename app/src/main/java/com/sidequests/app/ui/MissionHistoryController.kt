@@ -4,7 +4,9 @@ import com.sidequests.app.data.history.HistorySource
 import com.sidequests.app.domain.HistoryFilter
 import com.sidequests.app.domain.HistorySnapshot
 import com.sidequests.app.domain.MissionHistory
+import com.sidequests.app.domain.QuestStatistics
 import com.sidequests.app.domain.buildMissionHistory
+import com.sidequests.app.domain.summarizeQuestStatistics
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
@@ -19,6 +21,7 @@ import kotlinx.coroutines.withContext
 
 data class MissionHistoryUiState(
     val history: MissionHistory = MissionHistory(),
+    val statistics: QuestStatistics? = null,
     val query: String = "",
     val filter: HistoryFilter = HistoryFilter.All,
     val initialized: Boolean = false,
@@ -85,8 +88,9 @@ class MissionHistoryController(
             try {
                 val result = source.load(accountId, connected)
                 if (result.snapshot != null && result.snapshot.userId == accountId) {
+                    val statistics = withContext(cpu) { summarizeQuestStatistics(result.snapshot) }
                     snapshot = result.snapshot
-                    _state.update { it.copy(fromCache = !result.fresh, refreshing = false) }
+                    _state.update { it.copy(statistics = statistics, fromCache = !result.fresh, refreshing = false) }
                     rebuild(false)
                 } else if (snapshot != null) {
                     _state.update { it.copy(fromCache = true, refreshing = false) }

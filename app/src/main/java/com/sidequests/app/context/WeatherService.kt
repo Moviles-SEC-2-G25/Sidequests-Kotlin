@@ -11,6 +11,7 @@ import org.json.JSONObject
 
 interface WeatherProvider {
     suspend fun getWeather(location: LocationData): WeatherData?
+    suspend fun getCachedWeather(location: LocationData): WeatherData? = null
 }
 
 class OpenMeteoWeatherProvider(
@@ -33,10 +34,7 @@ class OpenMeteoWeatherProvider(
     override suspend fun getWeather(location: LocationData): WeatherData? =
         withContext(Dispatchers.IO) {
             cacheMutex.withLock {
-                val key = LocationKey(
-                    latitude = (location.latitude * KEY_PRECISION).roundToInt(),
-                    longitude = (location.longitude * KEY_PRECISION).roundToInt(),
-                )
+                val key = location.cacheKey()
                 val previous = cache[key]
                 val now = nowMillis()
                 if (previous != null && now - previous.fetchedAtMillis < ttlMillis) {
@@ -56,6 +54,15 @@ class OpenMeteoWeatherProvider(
             }
         }
 
+    override suspend fun getCachedWeather(location: LocationData): WeatherData? = cacheMutex.withLock {
+        cache[location.cacheKey()]?.weather?.copy(isStale = true)
+    }
+
+    private fun LocationData.cacheKey() = LocationKey(
+        latitude = (latitude * KEY_PRECISION).roundToInt(),
+        longitude = (longitude * KEY_PRECISION).roundToInt(),
+    )
+
     companion object {
         const val DEFAULT_TTL_MILLIS = 600000L
         const val DEFAULT_MAX_ENTRIES = 3
@@ -69,6 +76,7 @@ private suspend fun fetchOpenMeteoWeather(location: LocationData): WeatherData? 
             "?latitude=${location.latitude}" +
             "&longitude=${location.longitude}" +
             "&current=temperature_2m,weather_code" +
+            "&hourly=precipitation_probability&forecast_hours=3" +
             "&temperature_unit=celsius"
     )
     val connection = (url.openConnection() as HttpURLConnection).apply {
@@ -79,12 +87,21 @@ private suspend fun fetchOpenMeteoWeather(location: LocationData): WeatherData? 
     return try {
         if (connection.responseCode !in 200..299) return null
         val body = connection.inputStream.bufferedReader().use { it.readText() }
-        val current = JSONObject(body).getJSONObject("current")
+        val response = JSONObject(body)
+        val current = response.getJSONObject("current")
         val temperature = current.optDouble("temperature_2m", Double.NaN)
         if (!temperature.isFinite()) return null
+        val hourly = response.optJSONObject("hourly")?.optJSONArray("precipitation_probability")
+        val rainProbability = hourly?.let { chances ->
+            (0 until chances.length()).mapNotNull { index ->
+                chances.optInt(index, -1).takeIf { it in 0..100 }
+            }.maxOrNull()
+        }
         WeatherData(
             temperatureCelsius = temperature,
             condition = weatherCodeToCondition(current.optInt("weather_code", -1)),
+            rainProbabilityPercent = rainProbability,
+            fetchedAtMillis = System.currentTimeMillis(),
         )
     } catch (_: Exception) {
         null

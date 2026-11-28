@@ -69,6 +69,7 @@ data class PhotoQuestSnapshot(
     val currentStep: Int,
     val completedSteps: Set<Int>,
     val closed: Boolean = false,
+    val paused: Boolean = false,
 )
 
 /**

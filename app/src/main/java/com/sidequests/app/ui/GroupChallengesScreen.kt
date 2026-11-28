@@ -111,7 +111,9 @@ fun GroupChallengesScreen(state: SidequestsUiState, viewModel: AppViewModel, onl
     ) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = { viewModel.navigate(AppScreen.Explorer) }) { Text("← Explore") }
+            TextButton(onClick = viewModel::closeGroupChallenges) {
+                Text(if (state.groupChallengesOrigin == AppScreen.Social) "← Social" else "← Explore")
+            }
             TextButton(onClick = { reload() }, enabled = online && !busy && gateway != null) { Text("↻ Refresh") }
         }
         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {

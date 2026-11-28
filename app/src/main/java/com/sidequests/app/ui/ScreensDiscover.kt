@@ -26,23 +26,35 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.snapshotFlow
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.sidequests.app.model.QuestDifficulty
 import com.sidequests.app.context.ContextUiState
+import com.sidequests.app.context.TimeOfDay
 import com.sidequests.app.context.label
+import com.sidequests.app.domain.CompletionLikelihood
+import com.sidequests.app.domain.QuestStatistics
+import com.sidequests.app.domain.exploreAdaptationMessage
+import com.sidequests.app.model.Quest
 import com.sidequests.app.model.SidequestsUiState
 import com.sidequests.app.model.SocialLevel
 import com.sidequests.app.ui.theme.DiscoveryTeal
@@ -229,7 +241,7 @@ private fun DifficultyOption(
     }
 }
 
-@OptIn(ExperimentalFoundationApi::class)
+@OptIn(ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)
 @Composable
 fun ExplorerScreen(
     state: SidequestsUiState,
@@ -237,6 +249,8 @@ fun ExplorerScreen(
     contextState: ContextUiState,
     onRequestLocation: () -> Unit,
     modifier: Modifier = Modifier,
+    statistics: QuestStatistics? = null,
+    displayName: String? = null,
 ) {
     val recommendations = viewModel.recommendations()
     // Re-evaluated on every recomposition triggered by a new state.
@@ -244,15 +258,26 @@ fun ExplorerScreen(
 
     androidx.compose.runtime.LaunchedEffect(Unit) {
         viewModel.applySmartAvailableTime()
+        viewModel.refreshContextIfStale()
     }
-    val filtered = viewModel.allQuests().filter {
-        (state.selectedCategory == "All" || it.category == state.selectedCategory) &&
-            it.id !in state.skippedQuestIds
+    val filtered = viewModel.exploreQuests()
+    val adaptationMessage = contextState.context.exploreAdaptationMessage()
+    val snackbars = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
+    val haptic = LocalHapticFeedback.current
+    fun surprise() {
+        val message = viewModel.openSurpriseQuest(statistics?.completedQuestIds.orEmpty())
+        if (message == null) haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+        else scope.launch { snackbars.showSnackbar(message) }
     }
+    val shakingAvailable = rememberSurpriseQuestGesture(::surprise)
 
     fun progressLabel(questId: String): String? = viewModel.openAttemptProgress(questId)?.let { progress ->
         val total = viewModel.allQuests().firstOrNull { it.id == questId }?.steps?.size ?: return@let null
         "In progress · ${progress.completedSteps.size}/$total"
+    }
+    fun completionLabel(quest: Quest): String? = statistics?.let {
+        (it.categories[quest.category.trim().lowercase()]?.likelihood ?: CompletionLikelihood.NewForYou).label
     }
     val activeQuest = if (viewModel.hasActiveQuest()) viewModel.activeQuest() else null
     val activeProgress = activeQuest?.let { viewModel.openAttemptProgress(it.id) }
@@ -260,267 +285,301 @@ fun ExplorerScreen(
     val explorerListState = rememberLazyListState()
     // Do not count a recommendation as an impression just because the RPC returned.
     // LazyColumn may precompose offscreen content; use its actual visible item keys.
-    LaunchedEffect(explorerListState, state.bq8FreshBatchId) {
-        if (state.bq8FreshBatchId != null) {
-            snapshotFlow {
-                explorerListState.layoutInfo.visibleItemsInfo.mapNotNull { item ->
-                    (item.key as? String)
-                        ?.takeIf { it.startsWith("rec-") }
-                        ?.removePrefix("rec-")
-                }
-            }.collect { visibleIds ->
-                visibleIds.forEach(viewModel::bq8RecommendationVisible)
+    LaunchedEffect(explorerListState, state.bq8FreshBatchId, state.remoteRecommendationIds) {
+        snapshotFlow {
+            explorerListState.layoutInfo.visibleItemsInfo.mapNotNull { item ->
+                (item.key as? String)
+                    ?.takeIf { it.startsWith("rec-") }
+                    ?.removePrefix("rec-")
             }
+        }.collect { visibleIds ->
+            visibleIds.forEach(viewModel::smartPickVisible)
         }
     }
 
-    LazyColumn(
-        state = explorerListState,
-        modifier = modifier.fillMaxSize().background(MaterialTheme.colorScheme.background),
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 24.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
-    ) {
-        if (activeQuest != null && activeProgress != null) {
-            item(key = "active-quest") {
-                Card(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(top = 12.dp)
-                        .clickable { viewModel.resumeQuest(activeQuest.id) },
-                    shape = RoundedCornerShape(20.dp),
-                    colors = CardDefaults.cardColors(containerColor = DiscoveryTeal.copy(alpha = .14f)),
-                ) {
-                    Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Text(activeQuest.emoji, fontSize = 30.sp)
-                        Spacer(Modifier.size(12.dp))
-                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Text("YOUR ACTIVE QUEST", color = DiscoveryTeal, fontSize = 10.sp, fontWeight = FontWeight.Black)
-                            Text(activeQuest.title, fontWeight = FontWeight.Bold)
-                            LinearProgressIndicator(
-                                progress = { activeProgress.completedSteps.size.toFloat() / activeQuest.steps.size.toFloat() },
-                                modifier = Modifier.fillMaxWidth().height(5.dp).clip(CircleShape),
-                                color = DiscoveryTeal,
-                                trackColor = MaterialTheme.colorScheme.surfaceVariant,
-                            )
-                            Text(
-                                "${activeProgress.completedSteps.size} of ${activeQuest.steps.size} steps · tap to continue",
-                                fontSize = 11.sp,
-                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = .62f),
-                            )
+    Box(modifier = modifier.fillMaxSize()) {
+        LazyColumn(
+            state = explorerListState,
+            modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background),
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            if (activeQuest != null && activeProgress != null) {
+                item(key = "active-quest") {
+                    Card(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(top = 12.dp)
+                            .clickable { viewModel.resumeQuest(activeQuest.id) },
+                        shape = RoundedCornerShape(20.dp),
+                        colors = CardDefaults.cardColors(containerColor = DiscoveryTeal.copy(alpha = .14f)),
+                    ) {
+                        Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text(activeQuest.emoji, fontSize = 30.sp)
+                            Spacer(Modifier.size(12.dp))
+                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text("YOUR ACTIVE QUEST", color = DiscoveryTeal, fontSize = 10.sp, fontWeight = FontWeight.Black)
+                                Text(activeQuest.title, fontWeight = FontWeight.Bold)
+                                LinearProgressIndicator(
+                                    progress = { activeProgress.completedSteps.size.toFloat() / activeQuest.steps.size.toFloat() },
+                                    modifier = Modifier.fillMaxWidth().height(5.dp).clip(CircleShape),
+                                    color = DiscoveryTeal,
+                                    trackColor = MaterialTheme.colorScheme.surfaceVariant,
+                                )
+                                Text(
+                                    "${activeProgress.completedSteps.size} of ${activeQuest.steps.size} steps · tap to continue",
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = .62f),
+                                )
+                            }
                         }
                     }
                 }
             }
-        }
-        item {
-            Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 18.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("SIDEQUESTS", color = ExplorerIndigo, fontSize = 11.sp, fontWeight = FontWeight.Black, letterSpacing = 1.4.sp)
-                        Text("Find your next detour", style = MaterialTheme.typography.headlineMedium)
-                        Text("Small adventures. Right-sized for now.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface.copy(alpha = .58f))
+            item {
+                Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 18.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            val greeting = when (contextState.context.timeOfDay) {
+                                TimeOfDay.MORNING -> "Good morning"
+                                TimeOfDay.AFTERNOON -> "Good afternoon"
+                                TimeOfDay.EVENING, TimeOfDay.NIGHT -> "Good evening"
+                            }
+                            Text(displayName?.let { "$greeting, $it" } ?: greeting, style = MaterialTheme.typography.bodyMedium)
+                            Text("What do you feel like today?", style = MaterialTheme.typography.headlineSmall)
+                        }
+                        Surface(
+                            modifier = Modifier.size(42.dp).clip(CircleShape).clickable(onClick = viewModel::toggleDarkMode),
+                            color = MaterialTheme.colorScheme.surfaceVariant,
+                            shape = CircleShape,
+                        ) {
+                            Box(contentAlignment = Alignment.Center) { Text(if (state.darkMode) "☀️" else "🌙", fontSize = 18.sp) }
+                        }
                     }
-                    Surface(
-                        modifier = Modifier.size(42.dp).clip(CircleShape).clickable(onClick = viewModel::toggleDarkMode),
-                        color = MaterialTheme.colorScheme.surfaceVariant,
-                        shape = CircleShape,
+                    Spacer(Modifier.height(20.dp))
+                    Text("I HAVE...", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface.copy(alpha = .55f))
+                    Spacer(Modifier.height(8.dp))
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        items(listOf(15, 20, 30, 45, 60)) { minutes ->
+                            ChoiceChip(
+                                text = "$minutes min",
+                                selected = state.availableTime == minutes,
+                                onClick = { viewModel.setAvailableTime(minutes) },
+                            )
+                        }
+                    }
+                    state.smartTimeHint?.let { hint ->
+                        Spacer(Modifier.height(6.dp))
+                        Text(hint, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = QuestAmber)
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        ChoiceChip("🌐 All", state.preferences.locationMode == "all", { viewModel.setLocationMode("all") })
+                        ChoiceChip("📍 Nearby", state.preferences.locationMode == "gps", { viewModel.setLocationMode("gps") }, selectedColor = DiscoveryTeal)
+                        ChoiceChip("🏠 Anywhere", state.preferences.locationMode == "anywhere", { viewModel.setLocationMode("anywhere") }, selectedColor = DiscoveryTeal)
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    Text("Social vibe for this session", style = MaterialTheme.typography.labelLarge)
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        item {
+                            ChoiceChip(
+                                "Profile · ${state.preferences.socialLevel.name}",
+                                state.sessionSocialLevel == null,
+                                { viewModel.setSessionSocialLevel(null) },
+                            )
+                        }
+                        items(SocialLevel.entries) { level ->
+                            ChoiceChip(level.name, state.sessionSocialLevel == level, { viewModel.setSessionSocialLevel(level) })
+                        }
+                    }
+                }
+            }
+
+            item {
+                ContextAwareCard(
+                    contextState = contextState,
+                    locationMode = state.preferences.locationMode,
+                    onRequestLocation = onRequestLocation,
+                    onRefresh = { viewModel.refreshContext(force = true) },
+                )
+            }
+
+            item(key = "discover-more") {
+                Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Discover more", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        DiscoverShortcut("🔀", "Try variety", "Explore a new category",
+                            Modifier.weight(1f)) { viewModel.navigate(com.sidequests.app.model.AppScreen.VarietyDiscovery) }
+                        DiscoverShortcut("👥", "Group challenges", "Explore together",
+                            Modifier.weight(1f)) { viewModel.navigate(com.sidequests.app.model.AppScreen.GroupChallenges) }
+                    }
+                    TextButton(onClick = ::surprise) { Text("Surprise me") }
+                    if (shakingAvailable) Text("Shake your phone for a surprise quest.", style = MaterialTheme.typography.bodySmall)
+                }
+            }
+
+            if (adaptationMessage != null) item {
+                Card(Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
+                    Text(adaptationMessage, modifier = Modifier.padding(14.dp), style = MaterialTheme.typography.bodyMedium)
+                }
+            }
+
+            difficultySuggestion?.let { suggestion ->
+                item {
+                    Card(
+                        modifier = Modifier.padding(horizontal = 20.dp).fillMaxWidth(),
+                        shape = RoundedCornerShape(20.dp),
+                        colors = CardDefaults.cardColors(containerColor = QuestAmber.copy(alpha = .16f)),
                     ) {
-                        Box(contentAlignment = Alignment.Center) { Text(if (state.darkMode) "☀️" else "🌙", fontSize = 18.sp) }
+                        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text("SMART DIFFICULTY", fontSize = 10.sp, fontWeight = FontWeight.Black, color = QuestAmber, letterSpacing = 1.1.sp)
+                            Text(suggestion.explanation, fontWeight = FontWeight.Bold)
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                ChoiceChip(
+                                    text = "Switch to ${suggestion.suggested.name}",
+                                    selected = true,
+                                    onClick = viewModel::acceptDifficultySuggestion,
+                                    selectedColor = QuestAmber,
+                                )
+                                ChoiceChip(
+                                    text = "Keep ${suggestion.current.name}",
+                                    selected = false,
+                                    onClick = viewModel::dismissDifficultySuggestion,
+                                )
+                            }
+                        }
                     }
                 }
-                Spacer(Modifier.height(20.dp))
-                Text("I HAVE...", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface.copy(alpha = .55f))
-                Spacer(Modifier.height(8.dp))
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(listOf(15, 20, 30, 45, 60)) { minutes ->
-                        ChoiceChip(
-                            text = if (minutes == 60) "1 hr+" else "$minutes min",
-                            selected = state.availableTime == minutes,
-                            onClick = { viewModel.setAvailableTime(minutes) },
+            }
+
+            // Keep the catalogue visible during an outage, but let users retry
+            // as soon as internet comes back without restarting Sidequests.
+            if (state.catalogError != null && !state.catalogLoading) {
+                item {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = "Couldn't update quests. You can try again.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.weight(1f),
                         )
+                        TextButton(onClick = viewModel::refreshQuestCatalog) {
+                            Text("Try again")
+                        }
                     }
                 }
-                state.smartTimeHint?.let { hint ->
-                    Spacer(Modifier.height(6.dp))
-                    Text(hint, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = QuestAmber)
-                }
-                Spacer(Modifier.height(10.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    ChoiceChip("🌐 All", state.preferences.locationMode == "all", { viewModel.setLocationMode("all") })
-                    ChoiceChip("📍 Nearby", state.preferences.locationMode == "gps", { viewModel.setLocationMode("gps") }, selectedColor = DiscoveryTeal)
-                    ChoiceChip("🏠 Anywhere", state.preferences.locationMode == "anywhere", { viewModel.setLocationMode("anywhere") }, selectedColor = DiscoveryTeal)
-                }
             }
-        }
 
-        item {
-            ContextAwareCard(
-                contextState = contextState,
-                locationMode = state.preferences.locationMode,
-                onRequestLocation = onRequestLocation,
-                onRefresh = { viewModel.refreshContext(force = true) },
-            )
-        }
-
-        item(key = "discover-more") {
-            Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Discover more", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    DiscoverShortcut("🔀", "Try variety", "Explore a new category",
-                        Modifier.weight(1f)) { viewModel.navigate(com.sidequests.app.model.AppScreen.VarietyDiscovery) }
-                    DiscoverShortcut("👥", "Group challenges", "Explore together",
-                        Modifier.weight(1f)) { viewModel.navigate(com.sidequests.app.model.AppScreen.GroupChallenges) }
-                }
-            }
-        }
-
-        difficultySuggestion?.let { suggestion ->
             item {
                 Card(
                     modifier = Modifier.padding(horizontal = 20.dp).fillMaxWidth(),
-                    shape = RoundedCornerShape(20.dp),
-                    colors = CardDefaults.cardColors(containerColor = QuestAmber.copy(alpha = .16f)),
+                    shape = RoundedCornerShape(24.dp),
+                    colors = CardDefaults.cardColors(containerColor = ExplorerIndigo),
                 ) {
-                    Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("SMART DIFFICULTY", fontSize = 10.sp, fontWeight = FontWeight.Black, color = QuestAmber, letterSpacing = 1.1.sp)
-                        Text(suggestion.explanation, fontWeight = FontWeight.Bold)
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Column(modifier = Modifier.padding(18.dp)) {
+                        Text("SMART PICKS FOR YOU", color = QuestAmber, fontSize = 10.sp, fontWeight = FontWeight.Black, letterSpacing = 1.1.sp)
+                        Spacer(Modifier.height(4.dp))
+                        Text("Matched to your time, budget and vibe", color = Color.White, style = MaterialTheme.typography.titleLarge)
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            text = when {
+                                state.catalogLoading -> "Syncing quest catalogue…"
+                                state.catalogError != null -> "${state.catalogSource} · remote refresh unavailable"
+                                else -> state.catalogSource
+                            },
+                            color = Color.White.copy(alpha = .78f),
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            text = when {
+                                state.recommendationLoading -> "Refreshing shared BQ5 recommendations…"
+                                state.recommendationError != null -> "Recommendation fallback · ${state.recommendationError}"
+                                else -> state.recommendationSource
+                            },
+                            color = Color.White.copy(alpha = .78f),
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        // BQ14 (#87): tells the user Smart Picks are filtered and opens the view.
+                        val adaptation = viewModel.socialAdaptation(state)
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            text = if (adaptation.active) {
+                                "Adapted to your social comfort (${state.socialComfort.level.label}) · Change"
+                            } else {
+                                "Social comfort: ${state.socialComfort.level.label} · Adjust"
+                            },
+                            color = QuestAmber,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.clickable { viewModel.navigate(AppScreen.SocialComfort) },
+                        )
+                    }
+                }
+            }
+
+            item {
+                if (com.sidequests.app.BuildConfig.DEBUG && state.bq8FreshBatchId != null) {
+                    Text(
+                        text = "BQ8 test · server arm: ${state.bq8Variant ?: "unassigned"}",
+                        modifier = Modifier.padding(horizontal = 20.dp),
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                }
+            }
+
+            items(if (state.catalogLoading || state.recommendationLoading) emptyList() else recommendations, key = { "rec-${it.id}" }) { quest ->
+                if (quest.id == recommendations.firstOrNull()?.id && !state.catalogLoading && !state.recommendationLoading) {
+                    LaunchedEffect(quest.id) { viewModel.firstOnboardingRecommendationVisible(quest.id) }
+                }
+                QuestCard(
+                    quest = quest,
+                    onOpen = { viewModel.openQuestDetail(quest.id, fromSmartPicks = true) },
+                    onSkip = { viewModel.skipQuest(quest.id) },
+                    modifier = Modifier.padding(horizontal = 20.dp),
+                    progressLabel = progressLabel(quest.id),
+                    onStartNow = { viewModel.startInstantPlan(quest.id) },
+                    startNowEnabled = quest.steps.isNotEmpty() &&
+                        (viewModel.canAcceptQuest(quest) || viewModel.openAttemptProgress(quest.id) != null),
+                    completionLabel = completionLabel(quest),
+                )
+            }
+
+            item {
+                Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp)) {
+                    Text("EXPLORE BY CATEGORY", fontSize = 11.sp, fontWeight = FontWeight.Black, color = MaterialTheme.colorScheme.onSurface.copy(alpha = .55f))
+                    Spacer(Modifier.height(8.dp))
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        items(viewModel.categories) { category ->
                             ChoiceChip(
-                                text = "Switch to ${suggestion.suggested.name}",
-                                selected = true,
-                                onClick = viewModel::acceptDifficultySuggestion,
-                                selectedColor = QuestAmber,
-                            )
-                            ChoiceChip(
-                                text = "Keep ${suggestion.current.name}",
-                                selected = false,
-                                onClick = viewModel::dismissDifficultySuggestion,
+                                text = category,
+                                selected = state.selectedCategory == category,
+                                onClick = { viewModel.setCategory(category) },
+                                selectedColor = if (category == "All") ExplorerIndigo else DiscoveryTeal,
                             )
                         }
                     }
                 }
             }
-        }
 
-        // Keep the catalogue visible during an outage, but let users retry
-        // as soon as internet comes back without restarting Sidequests.
-        if (state.catalogError != null && !state.catalogLoading) {
-            item {
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        text = "Couldn't update quests. You can try again.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier.weight(1f),
-                    )
-                    TextButton(onClick = viewModel::refreshQuestCatalog) {
-                        Text("Try again")
-                    }
-                }
-            }
-        }
-
-        item {
-            Card(
-                modifier = Modifier.padding(horizontal = 20.dp).fillMaxWidth(),
-                shape = RoundedCornerShape(24.dp),
-                colors = CardDefaults.cardColors(containerColor = ExplorerIndigo),
-            ) {
-                Column(modifier = Modifier.padding(18.dp)) {
-                    Text("SMART PICKS FOR YOU", color = QuestAmber, fontSize = 10.sp, fontWeight = FontWeight.Black, letterSpacing = 1.1.sp)
-                    Spacer(Modifier.height(4.dp))
-                    Text("Matched to your time, budget and vibe", color = Color.White, style = MaterialTheme.typography.titleLarge)
-                    Text("Prototype recommendation logic updates immediately when you change filters.", color = Color.White.copy(alpha = .72f), fontSize = 12.sp)
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        text = when {
-                            state.catalogLoading -> "Syncing quest catalogue…"
-                            state.catalogError != null -> "${state.catalogSource} · remote refresh unavailable"
-                            else -> state.catalogSource
-                        },
-                        color = Color.White.copy(alpha = .78f),
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        text = when {
-                            state.recommendationLoading -> "Refreshing shared BQ5 recommendations…"
-                            state.recommendationError != null -> "Recommendation fallback · ${state.recommendationError}"
-                            else -> state.recommendationSource
-                        },
-                        color = Color.White.copy(alpha = .78f),
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                    // BQ14 (#87): tells the user Smart Picks are filtered and opens the view.
-                    val adaptation = viewModel.socialAdaptation(state)
-                    Spacer(Modifier.height(6.dp))
-                    Text(
-                        text = if (adaptation.active) {
-                            "Adapted to your social comfort (${state.socialComfort.level.label}) · Change"
-                        } else {
-                            "Social comfort: ${state.socialComfort.level.label} · Adjust"
-                        },
-                        color = QuestAmber,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.clickable { viewModel.navigate(AppScreen.SocialComfort) },
-                    )
-                }
-            }
-        }
-
-        item {
-            if (com.sidequests.app.BuildConfig.DEBUG && state.bq8FreshBatchId != null) {
-                Text(
-                    text = "BQ8 test · server arm: ${state.bq8Variant ?: "unassigned"}",
+            items(filtered, key = { "all-${it.id}" }) { quest ->
+                QuestCard(
+                    quest = quest,
+                    onOpen = { viewModel.openQuestDetail(quest.id) },
                     modifier = Modifier.padding(horizontal = 20.dp),
-                    style = MaterialTheme.typography.labelSmall,
+                    progressLabel = progressLabel(quest.id),
+                    completionLabel = completionLabel(quest),
                 )
             }
-        }
-
-        items(if (state.catalogLoading || state.recommendationLoading) emptyList() else recommendations, key = { "rec-${it.id}" }) { quest ->
-            if (quest.id == recommendations.firstOrNull()?.id && !state.catalogLoading && !state.recommendationLoading) {
-                LaunchedEffect(quest.id) { viewModel.firstOnboardingRecommendationVisible(quest.id) }
-            }
-            QuestCard(
-                quest = quest,
-                onOpen = { viewModel.openQuestDetail(quest.id, fromSmartPicks = true) },
-                onSkip = { viewModel.skipQuest(quest.id) },
-                modifier = Modifier.padding(horizontal = 20.dp),
-                progressLabel = progressLabel(quest.id),
-            )
-        }
-
-        item {
-            Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp)) {
-                Text("EXPLORE BY CATEGORY", fontSize = 11.sp, fontWeight = FontWeight.Black, color = MaterialTheme.colorScheme.onSurface.copy(alpha = .55f))
-                Spacer(Modifier.height(8.dp))
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(viewModel.categories) { category ->
-                        ChoiceChip(
-                            text = category,
-                            selected = state.selectedCategory == category,
-                            onClick = { viewModel.setCategory(category) },
-                            selectedColor = if (category == "All") ExplorerIndigo else DiscoveryTeal,
-                        )
-                    }
-                }
+            if (filtered.isEmpty() && !state.catalogLoading) item {
+                Text("No quests match your filters.", modifier = Modifier.padding(horizontal = 20.dp))
             }
         }
-
-        items(filtered, key = { "all-${it.id}" }) { quest ->
-            QuestCard(
-                quest = quest,
-                onOpen = { viewModel.openQuestDetail(quest.id) },
-                modifier = Modifier.padding(horizontal = 20.dp),
-                progressLabel = progressLabel(quest.id),
-            )
-        }
+        SnackbarHost(snackbars, modifier = Modifier.align(Alignment.BottomCenter))
     }
 }
 
@@ -564,7 +623,8 @@ private fun ContextAwareCard(
             }
             if (contextState.context.weather != null) {
                 Text(
-                    "${contextState.context.weather.temperatureCelsius.toInt()}°C • context-aware recommendations active",
+                    "${contextState.context.weather.temperatureCelsius.toInt()}°C" +
+                        if (contextState.context.weather.isStale) " · Last known weather" else "",
                     fontSize = 11.sp,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = .55f),
                 )

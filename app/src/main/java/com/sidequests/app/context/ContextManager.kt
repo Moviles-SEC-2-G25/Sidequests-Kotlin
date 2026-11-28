@@ -11,6 +11,9 @@ class ContextManager(
     private val weatherProvider: WeatherProvider,
     private val timeProvider: TimeProvider = SystemTimeProvider(),
 ) {
+    suspend fun weatherAt(location: LocationData, online: Boolean): WeatherData? =
+        if (online) weatherProvider.getWeather(location) else weatherProvider.getCachedWeather(location)
+
     suspend fun readContext(): UserContext = withContext(Dispatchers.IO) {
         coroutineScope {
             val timeDeferred = async { timeProvider.now() }

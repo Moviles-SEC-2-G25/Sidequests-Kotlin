@@ -5,7 +5,10 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.content.pm.PackageManager
 import androidx.core.content.ContextCompat
+import com.google.android.gms.location.CurrentLocationRequest
 import com.google.android.gms.location.LocationServices
+import com.google.android.gms.location.Priority
+import com.google.android.gms.tasks.CancellationTokenSource
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
 
@@ -22,8 +25,15 @@ class AndroidLocationProvider(private val context: Context) : LocationProvider {
         val coarse = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
         if (!fine && !coarse) return null
 
+        val request = CurrentLocationRequest.Builder()
+            .setPriority(Priority.PRIORITY_BALANCED_POWER_ACCURACY)
+            .setMaxUpdateAgeMillis(60_000)
+            .setDurationMillis(5_000)
+            .build()
         return suspendCancellableCoroutine { continuation ->
-            client.lastLocation
+            val cancellation = CancellationTokenSource()
+            continuation.invokeOnCancellation { cancellation.cancel() }
+            client.getCurrentLocation(request, cancellation.token)
                 .addOnSuccessListener { location ->
                     if (continuation.isActive) {
                         continuation.resume(location?.let { LocationData(it.latitude, it.longitude) })
@@ -32,7 +42,6 @@ class AndroidLocationProvider(private val context: Context) : LocationProvider {
                 .addOnFailureListener {
                     if (continuation.isActive) continuation.resume(null)
                 }
-            continuation.invokeOnCancellation { }
         }
     }
 }

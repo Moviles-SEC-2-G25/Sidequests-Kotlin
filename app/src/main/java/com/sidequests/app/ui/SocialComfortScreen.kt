@@ -116,7 +116,7 @@ fun SocialComfortScreen(state: SidequestsUiState, viewModel: AppViewModel, onlin
         }
         item {
             Text(
-                "What your bitácora says",
+                "What your history says",
                 style = MaterialTheme.typography.titleMedium,
                 modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 8.dp),
             )
@@ -178,7 +178,7 @@ private fun HistorySection(
             view.unavailable -> Text("History is not available in this build.", fontSize = 13.sp)
             view.loading && report == null -> Row(verticalAlignment = Alignment.CenterVertically) {
                 CircularProgressIndicator(Modifier.padding(end = 12.dp).height(20.dp))
-                Text("Reading your bitácora…", fontSize = 13.sp)
+                Text("Reading your history…", fontSize = 13.sp)
             }
             report == null || !report.hasHistory -> {
                 Text(

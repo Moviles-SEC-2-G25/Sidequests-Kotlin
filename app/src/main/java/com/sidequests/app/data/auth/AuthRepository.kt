@@ -2,7 +2,9 @@ package com.sidequests.app.data.auth
 
 import io.github.jan.supabase.SupabaseClient
 import io.github.jan.supabase.auth.auth
+import io.github.jan.supabase.auth.OtpType
 import io.github.jan.supabase.auth.providers.builtin.Email
+import io.github.jan.supabase.auth.providers.builtin.OTP
 import io.github.jan.supabase.auth.status.SessionStatus
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.serialization.json.buildJsonObject
@@ -12,6 +14,8 @@ interface AuthRepository {
     val sessionStatus: StateFlow<SessionStatus>
 
     suspend fun signIn(email: String, password: String)
+    suspend fun sendEmailCode(email: String)
+    suspend fun verifyEmailCode(email: String, code: String)
 
     suspend fun signUp(
         displayName: String,
@@ -37,6 +41,17 @@ class SupabaseAuthRepository(
             this.email = email.trim()
             this.password = password
         }
+    }
+
+    override suspend fun sendEmailCode(email: String) {
+        client.auth.signInWith(OTP) {
+            this.email = email
+            createUser = false
+        }
+    }
+
+    override suspend fun verifyEmailCode(email: String, code: String) {
+        client.auth.verifyEmailOtp(type = OtpType.Email.EMAIL, email = email, token = code)
     }
 
     override suspend fun signUp(

@@ -29,24 +29,29 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -66,12 +71,18 @@ import com.sidequests.app.ui.theme.DiscoveryTeal
 import com.sidequests.app.ui.theme.ExplorerIndigo
 import com.sidequests.app.ui.theme.QuestAmber
 import com.sidequests.app.domain.SmartDifficultyAdvisor
+import com.sidequests.app.domain.QuestStatistics
+import com.sidequests.app.domain.similarQuests
+import com.sidequests.app.domain.hasDestination
 import com.sidequests.app.BuildConfig
 import com.sidequests.app.telemetry.AppModule
 import com.sidequests.app.telemetry.Bq1Telemetry
 import com.sidequests.app.telemetry.TelemetryStoreBenchmark
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import com.sidequests.app.ui.auth.PasswordChangeState
+import com.sidequests.app.ui.auth.BiometricUi
 import java.io.File
 
 @Composable
@@ -80,43 +91,32 @@ fun QuestDetailScreen(
     viewModel: AppViewModel,
     modifier: Modifier = Modifier,
     onBack: () -> Unit = { viewModel.navigate(AppScreen.Explorer) },
+    onRequestLocation: () -> Unit = {},
 ) {
     val deviceStatus by viewModel.deviceStatus.collectAsStateWithLifecycle()
     val appState by viewModel.uiState.collectAsStateWithLifecycle()
+    val location by viewModel.contextState.collectAsStateWithLifecycle()
     LazyColumn(
         modifier = modifier.fillMaxSize().background(MaterialTheme.colorScheme.background),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 20.dp, vertical = 18.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         item {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Surface(
-                    modifier = Modifier.size(42.dp).clip(CircleShape).clickable(onClick = onBack),
-                    color = MaterialTheme.colorScheme.surfaceVariant,
-                    shape = CircleShape,
-                ) { Box(contentAlignment = Alignment.Center) { Text("←", fontSize = 22.sp) } }
-                Spacer(Modifier.width(12.dp))
-                Text("Quest details", style = MaterialTheme.typography.titleLarge)
-            }
+            TextButton(onClick = onBack) { Text("← Back") }
         }
         item {
-            Card(
-                colors = CardDefaults.cardColors(containerColor = ExplorerIndigo),
-                shape = RoundedCornerShape(28.dp),
-            ) {
-                Column(modifier = Modifier.fillMaxWidth().padding(22.dp)) {
-                    Text(quest.emoji, fontSize = 52.sp)
-                    Spacer(Modifier.height(14.dp))
-                    FlowRow(horizontalArrangement = Arrangement.spacedBy(7.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
-                        if (quest.isNew) MetaPill("NEW", QuestAmber.copy(alpha = .25f))
-                        if (quest.isSponsored) MetaPill("SPONSORED", QuestAmber.copy(alpha = .28f))
-                        if (quest.isGroup) MetaPill("GROUP QUEST", Color.White.copy(alpha = .18f))
-                    }
-                    Spacer(Modifier.height(8.dp))
-                    Text(quest.title, color = Color.White, style = MaterialTheme.typography.displaySmall)
-                    Spacer(Modifier.height(6.dp))
-                    Text(quest.description, color = Color.White.copy(alpha = .78f), style = MaterialTheme.typography.bodyMedium)
+            Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    if (quest.isNew) MetaPill("New", QuestAmber.copy(alpha = .25f))
+                    if (quest.isSponsored) MetaPill(quest.sponsorName?.let { "Sponsored by $it" } ?: "Sponsored",
+                        QuestAmber.copy(alpha = .28f))
+                    if (quest.isGroup) MetaPill("Group quest")
+                    Text(quest.category.uppercase(), color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(vertical = 4.dp))
                 }
+                Text(quest.emoji, fontSize = 36.sp)
+                Text(quest.title, style = MaterialTheme.typography.headlineSmall)
+                Text(quest.description, style = MaterialTheme.typography.bodyMedium)
             }
         }
         item {
@@ -127,19 +127,28 @@ fun QuestDetailScreen(
         }
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                QuestFact(if (quest.location == LocationMode.Gps) "📍" else "🏠", "Location", quest.distance, Modifier.weight(1f))
-                QuestFact("👥", "Vibe", quest.socialLevel.name, Modifier.weight(1f))
+                QuestFact(if (quest.location == LocationMode.Gps) "📍" else "🏠", "Location",
+                    quest.locationName ?: quest.distance, Modifier.weight(1f))
+                QuestFact("👥", "Social", quest.socialLevel.name, Modifier.weight(1f))
             }
         }
         item {
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                QuestFact("🎯", "Difficulty", quest.difficulty.name, Modifier.weight(1f))
-                Spacer(Modifier.weight(1f))
+            Surface(shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.secondaryContainer) {
+                Text("Difficulty: ${quest.difficulty.name}", modifier = Modifier.fillMaxWidth().padding(16.dp),
+                    style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSecondaryContainer)
             }
         }
+        if (quest.hasDestination() || location.context.location != null) item {
+            QuestWeatherCard(quest, location.context, deviceStatus.isOnline, viewModel)
+        }
+        if (quest.hasDestination()) item { QuestCompass(quest, location.context.location, onRequestLocation) }
         item {
             Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
-                Text("WHAT YOU'LL DO", fontSize = 11.sp, fontWeight = FontWeight.Black, color = MaterialTheme.colorScheme.onSurface.copy(alpha = .55f))
+                Text("What you'll do (${quest.steps.size} steps)", style = MaterialTheme.typography.titleMedium)
+                if (quest.steps.isEmpty()) {
+                    Text("Quest steps are unavailable.")
+                    TextButton(onClick = viewModel::refreshQuestCatalog) { Text("Refresh quests") }
+                }
                 quest.steps.forEachIndexed { index, step ->
                     Row(verticalAlignment = Alignment.Top) {
                         Box(
@@ -184,6 +193,8 @@ fun QuestDetailScreen(
                         onClick = { viewModel.resumeQuest(quest.id) },
                         containerColor = DiscoveryTeal,
                     )
+                } else if (quest.steps.isEmpty()) {
+                    PrimaryButton("Start quest", {}, enabled = false)
                 } else if (viewModel.canAcceptQuest(quest)) {
                     if (!deviceStatus.isOnline) {
                         Text(
@@ -237,6 +248,8 @@ fun ActiveQuestScreen(
     progress: QuestProgress,
     viewModel: AppViewModel,
     modifier: Modifier = Modifier,
+    walking: QuestWalkingUi? = null,
+    onRequestLocation: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val cameraService = remember(context) {
@@ -308,6 +321,21 @@ fun ActiveQuestScreen(
                 color = DiscoveryTeal,
                 trackColor = MaterialTheme.colorScheme.surfaceVariant,
             )
+        }
+        if (walking != null) item { QuestWalkingCard(walking) }
+        val step = quest.steps.getOrNull(progress.currentStep)
+        if (!allDone && step?.requiresLocation == true) item {
+            Column {
+                Text(
+                    if (quest.hasDestination()) "Automatic location check-in"
+                    else "This quest has no saved coordinates. You can complete the step manually.",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                if (quest.hasDestination()) {
+                    Text("Allow precise location to verify your arrival.", style = MaterialTheme.typography.bodySmall)
+                    TextButton(onClick = onRequestLocation) { Text("Location access") }
+                }
+            }
         }
         if (appState.pendingProgressSync > 0) {
             item {
@@ -428,7 +456,7 @@ fun ActiveQuestScreen(
                         Spacer(Modifier.height(12.dp))
                         PrimaryButton(
                             text = if (finishesQuest) "Complete final step ✓" else "Mark step complete ✓",
-                            onClick = viewModel::completeCurrentStep,
+                            onClick = { viewModel.completeCurrentStep(appState.attemptIdByQuest[quest.id], index) },
                             enabled = decision.allowed,
                             containerColor = DiscoveryTeal,
                         )
@@ -551,64 +579,91 @@ fun ExitFlowScreen(
 fun RatingScreen(
     quest: Quest,
     viewModel: AppViewModel,
+    state: SidequestsUiState,
+    historicalUnavailableIds: Set<String>,
     modifier: Modifier = Modifier,
 ) {
-    var stars by remember { mutableIntStateOf(4) }
-    var selectedTags by remember { mutableStateOf(setOf<String>()) }
-    val moods = listOf("😐", "🙂", "😊", "😄", "🤩")
+    var stars by rememberSaveable { mutableIntStateOf(0) }
+    var selectedTags by rememberSaveable(
+        stateSaver = listSaver<Set<String>, String>(save = { it.toList() }, restore = { it.toSet() }),
+    ) { mutableStateOf(emptySet()) }
     val tags = listOf("Worth it", "Would do again", "Felt proud", "Relaxing", "Surprising", "A bit tough")
+    val catalog = viewModel.allQuests()
+    val unavailable = remember(catalog, historicalUnavailableIds, state.progressByQuest, state.attemptIdByQuest) {
+        historicalUnavailableIds + catalog.filter { candidate ->
+            val progress = state.progressByQuest[candidate.id]
+            progress?.abandoned != true && (candidate.id in state.attemptIdByQuest ||
+                (candidate.steps.isNotEmpty() && (progress?.completedSteps?.size ?: 0) >= candidate.steps.size))
+        }.map { it.id }
+    }
+    val suggestions by produceState(emptyList<Quest>(), quest, catalog, unavailable, stars, state.availableTime) {
+        value = withContext(Dispatchers.Default) {
+            similarQuests(quest, catalog, unavailable, stars, state.availableTime)
+        }
+    }
 
     Column(
-        modifier = modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(24.dp),
+        modifier = modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)
+            .verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Spacer(Modifier.height(22.dp))
-        Text("QUEST COMPLETE", color = DiscoveryTeal, fontSize = 10.sp, fontWeight = FontWeight.Black)
-        Text("How did it feel?", style = MaterialTheme.typography.headlineMedium)
-        Text(quest.title, color = MaterialTheme.colorScheme.onSurface.copy(alpha = .6f), textAlign = TextAlign.Center)
-        Spacer(Modifier.height(24.dp))
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            moods.forEachIndexed { index, mood ->
-                val value = index + 1
-                Text(
-                    mood,
-                    modifier = Modifier.size(if (stars == value) 52.dp else 44.dp).clip(CircleShape).background(if (stars == value) QuestAmber.copy(alpha = .2f) else Color.Transparent).clickable { stars = value }.padding(7.dp),
-                    fontSize = 28.sp,
-                    textAlign = TextAlign.Center,
-                )
+        Text(quest.emoji, fontSize = 64.sp)
+        Text("Quest completed!", color = DiscoveryTeal, style = MaterialTheme.typography.labelLarge)
+        Text(quest.title, style = MaterialTheme.typography.titleLarge, textAlign = TextAlign.Center)
+        Spacer(Modifier.height(20.dp))
+        Text("How was it?", style = MaterialTheme.typography.titleMedium)
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+            (1..5).forEach { value ->
+                IconButton(
+                    onClick = { stars = value },
+                    modifier = Modifier.weight(1f, fill = false).semantics {
+                        contentDescription = if (value == 1) "Rate one star" else "Rate $value stars"
+                    },
+                ) {
+                    Text(
+                        if (value <= stars) "★" else "☆",
+                        fontSize = 30.sp,
+                        color = if (value <= stars) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
+                    )
+                }
             }
         }
-        Spacer(Modifier.height(26.dp))
-        Text("WHAT STOOD OUT?", fontSize = 10.sp, fontWeight = FontWeight.Black, color = MaterialTheme.colorScheme.onSurface.copy(alpha = .5f))
-        Spacer(Modifier.height(10.dp))
+        Spacer(Modifier.height(16.dp))
+        Text("Tell us more (optional)", style = MaterialTheme.typography.bodySmall, modifier = Modifier.align(Alignment.Start))
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             tags.forEach { tag ->
                 ChoiceChip(
                     text = tag,
                     selected = tag in selectedTags,
                     onClick = {
-                        selectedTags = selectedTags.toMutableSet().apply {
-                            if (!add(tag)) remove(tag)
-                        }
+                        selectedTags = if (tag in selectedTags) selectedTags - tag else selectedTags + tag
                     },
                 )
             }
         }
         Spacer(Modifier.height(20.dp))
-        Card(
-            colors = CardDefaults.cardColors(containerColor = DiscoveryTeal.copy(alpha = .11f)),
-            shape = RoundedCornerShape(20.dp),
-        ) {
-            Text(
-                "Your feedback improves future recommendations. This is the smart-feature feedback loop from the Figma prototype.",
-                modifier = Modifier.padding(16.dp),
-                color = DiscoveryTeal,
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.SemiBold,
-            )
+        if (suggestions.isNotEmpty()) {
+            Text("You might also like", style = MaterialTheme.typography.titleMedium, modifier = Modifier.align(Alignment.Start))
+            suggestions.forEachIndexed { index, suggestion ->
+                Spacer(Modifier.height(8.dp))
+                Card(
+                    onClick = { viewModel.openSimilarQuest(suggestion.id, index + 1) },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp),
+                ) {
+                    Row(Modifier.padding(14.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Text(suggestion.emoji, fontSize = 24.sp)
+                        Column {
+                            Text(suggestion.title, style = MaterialTheme.typography.titleSmall)
+                            Text("${suggestion.category} · ${suggestion.duration}", style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
+            }
         }
-        Spacer(Modifier.weight(1f))
-        PrimaryButton("Submit & Explore More →", { viewModel.submitRating(stars, selectedTags) })
+        Spacer(Modifier.height(24.dp))
+        PrimaryButton("Save rating", { viewModel.submitRating(stars, selectedTags) }, enabled = stars > 0)
+        TextButton(onClick = viewModel::skipRating) { Text("Skip") }
     }
 }
 
@@ -679,13 +734,17 @@ fun ProfileScreen(
     onSignOut: () -> Unit,
     modifier: Modifier = Modifier,
     accountEmail: String? = null,
+    displayName: String? = null,
     address: String? = null,
     isOnline: Boolean = true,
     passwordState: PasswordChangeState = PasswordChangeState(),
+    statistics: QuestStatistics? = null,
+    biometric: BiometricUi? = null,
+    biometricEnabled: Boolean = false,
+    onDisableBiometrics: () -> Unit = {},
     onChangePassword: (newPassword: String, confirmation: String) -> Unit = { _, _ -> },
     onClearPasswordFeedback: () -> Unit = {},
 ) {
-    val completed = state.progressByQuest.values.count { it.completedSteps.size >= 4 }
     val interests = state.preferences.interests
     var showPasswordDialog by rememberSaveable { mutableStateOf(false) }
 
@@ -709,12 +768,12 @@ fun ProfileScreen(
         item {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(
-                    modifier = Modifier.size(64.dp).clip(CircleShape).background(ExplorerIndigo),
+                    modifier = Modifier.size(64.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primaryContainer),
                     contentAlignment = Alignment.Center,
-                ) { Text("🧭", fontSize = 34.sp) }
+                ) { Text(displayName?.firstOrNull()?.uppercaseChar()?.toString() ?: "🧭", fontSize = 26.sp) }
                 Spacer(Modifier.width(14.dp))
                 Column(modifier = Modifier.weight(1f)) {
-                    Text("Explorer", style = MaterialTheme.typography.titleLarge)
+                    Text(displayName ?: "Explorer", style = MaterialTheme.typography.titleLarge)
                     Text("📍 " + (address ?: "Location not available yet"), color = MaterialTheme.colorScheme.onSurface.copy(alpha = .55f))
                 }
                 Text(
@@ -724,6 +783,14 @@ fun ProfileScreen(
                     textAlign = TextAlign.Center,
                 )
             }
+        }
+        item {
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(9.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                AccentStat("Completed", statistics?.completed?.toString() ?: "—", "⚡", ExplorerIndigo)
+                AccentStat("Attempted", statistics?.attempts?.toString() ?: "—", "✓")
+                AccentStat("Steps walked", statistics?.steps?.toString() ?: "—", "👟")
+            }
+            TextButton(onClick = { viewModel.navigate(AppScreen.Statistics) }) { Text("View my stats") }
         }
         item {
             Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
@@ -756,13 +823,6 @@ fun ProfileScreen(
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = .55f),
                     )
                 }
-            }
-        }
-        item {
-            Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) {
-                AccentStat("Completed", "$completed", "⚡", ExplorerIndigo)
-                AccentStat("Day streak", "7", "🔥", QuestAmber)
-                AccentStat("Categories", "${interests.size}", "🗺️", DiscoveryTeal)
             }
         }
         item {
@@ -838,6 +898,29 @@ fun ProfileScreen(
                     showPasswordDialog = true
                 },
             )
+        }
+        if (biometric != null && state.accountUserId != null) item {
+            Column {
+                Text("Biometric unlock", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    when {
+                        biometricEnabled -> "Enabled for this account on this device."
+                        biometric.available -> "Use biometrics to open your saved session."
+                        else -> "Set up a supported biometric in your device settings."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                if (biometric.available || biometricEnabled) {
+                    TextButton(
+                        onClick = {
+                            if (biometricEnabled) onDisableBiometrics()
+                            else biometric.authenticate(state.accountUserId, true)
+                        },
+                        enabled = !biometric.busy,
+                    ) { Text(if (biometricEnabled) "Turn off biometric unlock" else "Enable biometric unlock") }
+                }
+                biometric.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            }
         }
         item {
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {

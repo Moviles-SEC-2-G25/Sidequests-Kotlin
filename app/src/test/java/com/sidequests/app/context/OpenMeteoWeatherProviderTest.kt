@@ -14,6 +14,18 @@ class OpenMeteoWeatherProviderTest {
     private val clear = WeatherData(20.0, WeatherCondition.CLEAR)
 
     @Test
+    fun offlineReadUsesOnlyCachedWeather() = runBlocking {
+        var calls = 0
+        val provider = OpenMeteoWeatherProvider(fetchWeather = { calls++; clear })
+        assertNull(provider.getCachedWeather(bogota))
+        assertEquals(0, calls)
+        provider.getWeather(bogota)
+        assertEquals(clear.copy(isStale = true), provider.getCachedWeather(nearby))
+        assertNull(provider.getCachedWeather(other))
+        assertEquals(1, calls)
+    }
+
+    @Test
     fun reusesFreshResponseForSameRoundedLocation() = runBlocking {
         var calls = 0
         val provider = OpenMeteoWeatherProvider(fetchWeather = {

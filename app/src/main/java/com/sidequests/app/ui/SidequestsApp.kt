@@ -1,6 +1,7 @@
 package com.sidequests.app.ui
 
 import android.Manifest
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -18,24 +19,36 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.sidequests.app.data.history.HistoryLoad
+import com.sidequests.app.data.history.HistorySource
 import com.sidequests.app.model.AppScreen
 import com.sidequests.app.model.SidequestsUiState
 import com.sidequests.app.ui.auth.AuthScreen
 import com.sidequests.app.ui.auth.AuthStage
 import com.sidequests.app.ui.auth.AuthViewModel
+import com.sidequests.app.ui.auth.BiometricLockScreen
+import com.sidequests.app.ui.auth.BiometricUi
+import com.sidequests.app.ui.auth.EmailCodeScreen
+import com.sidequests.app.ui.auth.rememberBiometricUi
 import com.sidequests.app.ui.auth.MissingSupabaseConfigurationScreen
 import com.sidequests.app.ui.theme.SidequestsTheme
 import kotlinx.coroutines.delay
@@ -48,8 +61,10 @@ fun SidequestsApp(
     val appState by appViewModel.uiState.collectAsStateWithLifecycle()
     val authState by authViewModel.uiState.collectAsStateWithLifecycle()
     val deviceStatus by appViewModel.deviceStatus.collectAsStateWithLifecycle()
+    val biometric = rememberBiometricUi(authViewModel)
     var wasOffline by remember { mutableStateOf(false) }
     var connectionRestored by remember { mutableStateOf(false) }
+    var locationPermissionRevision by remember { mutableIntStateOf(0) }
 
     LaunchedEffect(deviceStatus.isOnline) {
         if (!deviceStatus.isOnline) {
@@ -65,13 +80,16 @@ fun SidequestsApp(
 
     LaunchedEffect(authState.stage, authState.userId) {
         if (authState.stage == AuthStage.SignedIn) authState.userId?.let(appViewModel::attachAccount)
-        else if (authState.stage == AuthStage.SignedOut) appViewModel.detachAccount()
+        else if (authState.stage == AuthStage.SignedOut || authState.stage == AuthStage.BiometricLocked) {
+            appViewModel.detachAccount()
+        }
     }
 
     val locationPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) {
-        appViewModel.refreshContext()
+        locationPermissionRevision++
+        appViewModel.refreshContext(force = appState.screen in setOf(AppScreen.Nearby, AppScreen.QuestDetail))
         if (appState.screen == AppScreen.QuestAlternatives) appViewModel.refreshQuestAlternatives()
     }
 
@@ -86,8 +104,11 @@ fun SidequestsApp(
                 ) appViewModel::retryNetworkWork else null,
                 connectionRestored = connectionRestored,
                 // Signed out there is no saved data to show: explain what needs internet instead.
-                offlineBody = if (authState.stage == AuthStage.SignedIn) null
-                    else "Signing in and creating an account need internet. Connect to continue.",
+                offlineBody = when (authState.stage) {
+                    AuthStage.SignedIn -> null
+                    AuthStage.BiometricLocked -> "You can unlock your saved session on this device."
+                    else -> "Signing in and creating an account need internet. Connect to continue."
+                },
             )
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 when (authState.stage) {
@@ -106,8 +127,12 @@ fun SidequestsApp(
                         MissingSupabaseConfigurationScreen()
                     }
 
+                    AuthStage.BiometricLocked -> BiometricLockScreen(authState, biometric, authViewModel::signOut)
+
                     AuthStage.SignedOut -> {
-                        AuthScreen(
+                        if (authState.emailCodeMode) {
+                            EmailCodeScreen(authState, deviceStatus.isOnline, authViewModel)
+                        } else AuthScreen(
                             state = authState,
                             onSignIn = { email, password ->
                                 authViewModel.signIn(email, password, deviceStatus.isOnline)
@@ -117,6 +142,7 @@ fun SidequestsApp(
                             },
                             onClearFeedback = authViewModel::clearFeedback,
                             isOnline = deviceStatus.isOnline,
+                            onEmailCode = { authViewModel.setEmailCodeMode(true) },
                         )
                     }
 
@@ -133,6 +159,10 @@ fun SidequestsApp(
                             viewModel = appViewModel,
                             authViewModel = authViewModel,
                             accountEmail = authState.userEmail,
+                            displayName = authState.userDisplayName,
+                            biometric = biometric,
+                            biometricEnabled = authState.biometricEnabled,
+                            locationPermissionRevision = locationPermissionRevision,
                             onSignOut = authViewModel::signOut,
                             onRequestLocation = {
                                 locationPermissionLauncher.launch(
@@ -156,6 +186,10 @@ private fun AuthenticatedSidequestsContent(
     viewModel: AppViewModel,
     authViewModel: AuthViewModel,
     accountEmail: String?,
+    displayName: String?,
+    biometric: BiometricUi,
+    biometricEnabled: Boolean,
+    locationPermissionRevision: Int,
     onSignOut: () -> Unit,
     onRequestLocation: () -> Unit,
 ) {
@@ -163,10 +197,49 @@ private fun AuthenticatedSidequestsContent(
     val contextState by viewModel.contextState.collectAsStateWithLifecycle()
     val passwordState by authViewModel.passwordState.collectAsStateWithLifecycle()
     val offlinePackEntries by viewModel.offlinePackEntries.collectAsStateWithLifecycle()
+    val account = state.accountUserId ?: return
+    val quest = viewModel.activeQuest()
+    val attemptId = state.attemptIdByQuest[quest.id]
+    val openProgress = viewModel.openAttemptProgress(quest.id)?.takeUnless { it.paused }
+    val walking = rememberQuestWalking(account, attemptId, openProgress != null)
+    if (attemptId != null && openProgress != null) {
+        QuestCheckIn(account, attemptId, quest, openProgress, locationPermissionRevision,
+            deviceStatus.isLowBattery, viewModel)
+    }
+    LaunchedEffect(state.automaticCheckInMessage) {
+        if (state.automaticCheckInMessage != null) {
+            delay(5_000)
+            viewModel.clearAutomaticCheckInMessage()
+        }
+    }
+    val screenState = key(account) { rememberSaveableStateHolder() }
+    val ratingVisible = state.screen == AppScreen.Rating ||
+        (state.screen == AppScreen.QuestDetail && state.detailOrigin == AppScreen.Rating)
+    LaunchedEffect(screenState, ratingVisible) {
+        if (!ratingVisible) screenState.removeState("rating")
+    }
+    val historyScope = rememberCoroutineScope()
+    val historyController = remember(account, viewModel, historyScope) {
+        MissionHistoryController(
+            account, viewModel.missionHistorySource ?: HistorySource { _, _ -> HistoryLoad(null, false) },
+            historyScope,
+        )
+    }
+    DisposableEffect(historyController) { onDispose { historyController.close() } }
+    val historyState by historyController.state.collectAsStateWithLifecycle()
+    LaunchedEffect(historyController, deviceStatus.isOnline) {
+        historyController.connectivityChanged(deviceStatus.isOnline)
+    }
+    LaunchedEffect(historyController, state.screen, state.pendingProgressSync) {
+        if (state.screen == AppScreen.Statistics || state.screen == AppScreen.MissionHistory) {
+            historyController.refresh()
+        }
+    }
 
     LaunchedEffect(Unit) {
         viewModel.refreshQuestCatalog()
     }
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { viewModel.refreshContextIfStale() }
 
     LaunchedEffect(deviceStatus.isOnline) {
         if (deviceStatus.isOnline) viewModel.retryOfflinePackDownloads()
@@ -189,6 +262,10 @@ private fun AuthenticatedSidequestsContent(
             if (state.pendingPhotoUploads > 0) {
                 PendingPhotoUploadsBanner(state.pendingPhotoUploads, viewModel::retryPendingPhotoUploads)
             }
+            state.automaticCheckInMessage?.let {
+                Text(it, modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp),
+                    color = MaterialTheme.colorScheme.secondary, style = MaterialTheme.typography.labelLarge)
+            }
             Box(modifier = Modifier.weight(1f)) {
                 when (state.screen) {
                     AppScreen.Auth -> AuthScreen(
@@ -202,24 +279,33 @@ private fun AuthenticatedSidequestsContent(
 
                     AppScreen.Onboarding -> OnboardingScreen(state, viewModel)
 
-                    AppScreen.Explorer -> ExplorerScreen(
-                        state = state,
-                        viewModel = viewModel,
-                        contextState = contextState,
-                        onRequestLocation = onRequestLocation,
-                    )
+                    AppScreen.Explorer -> screenState.SaveableStateProvider("explore") {
+                        ExplorerScreen(state, viewModel, contextState, onRequestLocation,
+                            statistics = historyState.statistics, displayName = displayName)
+                    }
+
+                    AppScreen.Nearby -> screenState.SaveableStateProvider("nearby") {
+                        NearbyScreen(state, contextState, viewModel, onRequestLocation)
+                    }
+
+                    AppScreen.Social -> SocialScreen { viewModel.navigate(AppScreen.GroupChallenges) }
+
+                    AppScreen.QuestHome -> QuestHomeScreen { viewModel.navigate(AppScreen.Explorer) }
 
                     AppScreen.VarietyDiscovery -> VarietyScreen(state, viewModel)
 
                     AppScreen.GroupChallenges -> key(state.accountUserId) {
+                        BackHandler(onBack = viewModel::closeGroupChallenges)
                         GroupChallengesScreen(state, viewModel, deviceStatus.isOnline)
                     }
 
                     AppScreen.MissionHistory, AppScreen.QuestDetail -> {
                         if (state.screen == AppScreen.MissionHistory || state.detailFromHistory) {
-                            MissionHistoryRoute(state, viewModel, deviceStatus.isOnline)
+                            MissionHistoryRoute(state, viewModel, deviceStatus.isOnline, historyController, onRequestLocation)
                         } else {
-                            QuestDetailScreen(viewModel.selectedQuest(), viewModel)
+                            BackHandler(onBack = viewModel::closeQuestDetail)
+                            QuestDetailScreen(viewModel.selectedQuest(), viewModel,
+                                onBack = viewModel::closeQuestDetail, onRequestLocation = onRequestLocation)
                         }
                     }
 
@@ -227,6 +313,8 @@ private fun AuthenticatedSidequestsContent(
                         quest = viewModel.activeQuest(),
                         progress = viewModel.activeProgress(),
                         viewModel = viewModel,
+                        walking = walking,
+                        onRequestLocation = onRequestLocation,
                     )
 
                     AppScreen.ExitFlow -> ExitFlowScreen(
@@ -241,10 +329,15 @@ private fun AuthenticatedSidequestsContent(
                         onRequestLocation = onRequestLocation,
                     )
 
-                    AppScreen.Rating -> RatingScreen(
-                        viewModel.activeQuest(),
-                        viewModel,
-                    )
+                    AppScreen.Rating -> screenState.SaveableStateProvider("rating") {
+                        BackHandler(onBack = viewModel::skipRating)
+                        RatingScreen(
+                            viewModel.activeQuest(),
+                            viewModel,
+                            state = state,
+                            historicalUnavailableIds = historyState.statistics?.unavailableQuestIds.orEmpty(),
+                        )
+                    }
 
                     AppScreen.GroupQuest -> GroupQuestScreen(
                         viewModel.activeQuest(),
@@ -262,14 +355,25 @@ private fun AuthenticatedSidequestsContent(
                     )
                     AppScreen.SocialComfort -> SocialComfortScreen(state, viewModel, deviceStatus.isOnline)
 
+                    AppScreen.Statistics -> QuestStatisticsScreen(
+                        historyState,
+                        onBack = { viewModel.navigate(AppScreen.Profile) },
+                        onRefresh = historyController::refresh,
+                    )
+
                     AppScreen.Profile -> ProfileScreen(
                         state = state,
                         viewModel = viewModel,
                         onSignOut = onSignOut,
                         accountEmail = accountEmail,
+                        displayName = displayName,
                         address = contextState.address,
                         isOnline = deviceStatus.isOnline,
                         passwordState = passwordState,
+                        statistics = historyState.statistics,
+                        biometric = biometric,
+                        biometricEnabled = biometricEnabled,
+                        onDisableBiometrics = { authViewModel.setBiometricEnabled(account, false) },
                         onChangePassword = { newPassword, confirmation ->
                             authViewModel.changePassword(newPassword, confirmation, deviceStatus.isOnline)
                         },
@@ -285,23 +389,17 @@ private fun AuthenticatedSidequestsContent(
                     AppScreen.Rating,
                     AppScreen.MissionHistory,
                     AppScreen.SocialComfort,
-                ) && !(state.screen == AppScreen.QuestDetail && state.detailFromHistory)
+                    AppScreen.Statistics,
+                ) && !(state.screen == AppScreen.QuestDetail && (state.detailFromHistory || state.detailOrigin == AppScreen.Rating))
             ) {
                 BottomBar(
-                    screen = state.screen,
-                    questAvailable = viewModel.hasActiveQuest(),
+                    screen = when (state.screen) {
+                        AppScreen.QuestDetail -> state.detailOrigin
+                        AppScreen.GroupChallenges -> state.groupChallengesOrigin
+                        else -> state.screen
+                    },
                     onNavigate = { target ->
-                        if (target == AppScreen.ActiveQuest) {
-                            viewModel.navigate(
-                                if (viewModel.activeQuest().isGroup) {
-                                    AppScreen.GroupQuest
-                                } else {
-                                    AppScreen.ActiveQuest
-                                }
-                            )
-                        } else {
-                            viewModel.navigate(target)
-                        }
+                        if (target == AppScreen.QuestHome) viewModel.openQuestTab() else viewModel.navigate(target)
                     },
                 )
             }

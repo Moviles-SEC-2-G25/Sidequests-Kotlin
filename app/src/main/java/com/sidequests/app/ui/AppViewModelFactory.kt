@@ -73,6 +73,7 @@ class AppViewModelFactory(
                         File(applicationContext.noBackupFilesDir, "mission_history"),
                     ),
                     com.sidequests.app.data.history.SupabaseHistoryRemote(SupabaseProvider.client),
+                    walkingTotals = com.sidequests.app.data.history.WalkingTotalsStore(applicationContext)::read,
                 )
             } else null,
             // BQ14 (#86): comfort settings per account + events through the durable telemetry queue.

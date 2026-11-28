@@ -1,13 +1,15 @@
 package com.sidequests.app
 
 import android.os.Bundle
-import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
+import androidx.lifecycle.viewmodel.initializer
+import androidx.lifecycle.viewmodel.viewModelFactory
 import com.sidequests.app.context.AndroidLocationProvider
 import com.sidequests.app.context.AlternativeDemoContext
 import com.sidequests.app.context.ContextManager
@@ -15,14 +17,16 @@ import com.sidequests.app.context.DeviceStatusMonitor
 import com.sidequests.app.context.NominatimAddressProvider
 import com.sidequests.app.context.OpenMeteoWeatherProvider
 import com.sidequests.app.data.settings.DataStoreSettingsStore
+import com.sidequests.app.data.auth.AndroidBiometricLockStore
 import com.sidequests.app.sensor.light.AmbientLightMonitor
 import com.sidequests.app.telemetry.Bq1Telemetry
 import com.sidequests.app.ui.AppViewModel
 import com.sidequests.app.ui.AppViewModelFactory
 import com.sidequests.app.ui.SidequestsApp
+import com.sidequests.app.ui.auth.AuthViewModel
 import kotlinx.coroutines.launch
 
-class MainActivity : ComponentActivity() {
+class MainActivity : FragmentActivity() {
 
     private lateinit var deviceStatusMonitor: DeviceStatusMonitor
     private lateinit var ambientLightMonitor: AmbientLightMonitor
@@ -51,6 +55,10 @@ class MainActivity : ComponentActivity() {
             failureReporter = Bq1Telemetry,
         )
         val appViewModel = ViewModelProvider(this, factory)[AppViewModel::class.java]
+        val authFactory = viewModelFactory {
+            initializer { AuthViewModel(biometricStore = AndroidBiometricLockStore(applicationContext)) }
+        }
+        val authViewModel = ViewModelProvider(this, authFactory)[AuthViewModel::class.java]
         // BQ1 (#21): lets the app-wide lifecycle observer know whether a Nearby quest is active.
         Bq1Telemetry.activeNearbyQuestProvider = { appViewModel.activeNearbyQuestId() }
 
@@ -72,7 +80,7 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent {
-            SidequestsApp(appViewModel = appViewModel)
+            SidequestsApp(appViewModel = appViewModel, authViewModel = authViewModel)
         }
     }
 

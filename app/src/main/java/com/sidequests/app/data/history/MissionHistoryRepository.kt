@@ -72,10 +72,12 @@ class MissionHistoryRepository(
     private val remote: HistoryRemote,
     private val io: CoroutineDispatcher = Dispatchers.IO,
     private val timeoutMillis: Long = 5_000,
+    private val walkingTotals: suspend (String) -> Map<String, Int> = { emptyMap() },
 ) : HistorySource {
     override suspend fun load(userId: String, online: Boolean): HistoryLoad = withContext(io) {
         val saved = store.read(userId)
-        if (!online) return@withContext HistoryLoad(saved, false)
+        val steps = walkingTotals(userId)
+        if (!online) return@withContext HistoryLoad(saved?.withStepTotals(steps), false)
         val fresh = try {
             withTimeoutOrNull(timeoutMillis) {
                 remote.fetch(userId).also { result ->
@@ -85,11 +87,14 @@ class MissionHistoryRepository(
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (_: Exception) { null }
-        if (fresh == null) return@withContext HistoryLoad(saved, false)
+        if (fresh == null) return@withContext HistoryLoad(saved?.withStepTotals(steps), false)
         // A failed disk write must not hide fresh data; retain the previous valid cache.
         runCatching { store.save(fresh) }
-        HistoryLoad(fresh, true)
+        HistoryLoad(fresh.withStepTotals(steps), true)
     }
+
+    private fun HistorySnapshot.withStepTotals(steps: Map<String, Int>): HistorySnapshot =
+        if (steps.isEmpty()) this else copy(stepTotals = stepTotals + steps)
 }
 
 /** Existing RLS-protected tables only; no migrations or service credentials. */
@@ -134,8 +139,6 @@ class SupabaseHistoryRemote(private val client: SupabaseClient) : HistoryRemote 
         }
         val snapshot = HistorySnapshot(userId, attempts.await(), catalog.await())
         check(client.auth.currentUserOrNull()?.id == userId)
-        // Kotlin currently has no walked-step store or durable progress-write queue.
-        // Leave unavailable step totals and pending IDs empty, never fabricate either.
         snapshot
     }
 }
